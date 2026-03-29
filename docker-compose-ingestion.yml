@@ -1,0 +1,43 @@
+# fichier docker-compose-ingestion.yml  à la racine du projet poc/
+# Stack 3: Spark + Debezium
+# Il gère la stack d'ingestion Spark en streaming avec Redpanda et Minio.
+# Didier : pour l'instant on n'installe pas Debezium
+# Didier : version avec le nom des images fixées pour les flows step0, 1 et 2
+
+services:
+  spark-streaming:
+    build: ./spark
+    image: poc-spark-streaming:latest
+    container_name: spark_streaming_ingestion
+    # Important : pour que Spark puisse communiquer avec Kafka et MinIO,
+    # ils doivent partager le même réseau externe Docker.
+    networks:
+      - poc_network
+    environment:
+      # Injection des variables depuis ton fichier .env
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-http://minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - REDPANDA_BROKERS=${REDPANDA_BROKERS:-redpanda:9092}
+      - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
+    volumes:
+      # CHECKPOINTING : Volume monté sur ton SSD.
+      # Permet à Spark de retenir l'offset Kafka même après un crash.
+      # CHECKPOINTING : Le chemin cible correspond maintenant à l'image Apache
+      - ./spark/checkpoints:/opt/spark/checkpoints
+      #- ./spark/checkpoints:/opt/bitnami/spark/checkpoints
+    # La commande lance le job en mode "local" (1 master, pas de workers distribués, idéal pour le POC)
+    #command: >
+    #  spark-submit 
+    #  --master local[*] 
+    #  /opt/bitnami/spark/jobs/stream_to_minio.py
+    command: >
+      /opt/spark/bin/spark-submit 
+      --master local[*] 
+      /opt/spark/jobs/stream_to_minio.py
+
+    
+# Déclaration du réseau partagé (créé manuellement au préalable avec `docker network create poc_network`)
+networks:
+  poc_network:
+    external: true

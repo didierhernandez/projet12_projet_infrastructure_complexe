@@ -1,0 +1,21 @@
+{
+  "name": "postgres-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "didier",
+    "database.password": "mon_password_secu",
+    "database.dbname": "rh_db",
+    "database.server.name": "poc_server",
+    "topic.prefix": "cdc",
+    "table.include.list": "public.salaries",
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_cdc_slot",
+    "publication.name": "dbz_publication",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "true",
+    "value.converter.schemas.enable": "true"
+  }
+}

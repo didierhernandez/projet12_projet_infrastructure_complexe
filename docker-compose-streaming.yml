@@ -1,0 +1,67 @@
+# fichier docker-compose-streaming.yml à la racine
+# Stack 2: Redpanda + Schema Registry
+# Étape 5 : Stack "Streaming" - Redpanda (Kafka compatible)
+# Didier : Modification pour monter le fichier console-config.yaml à la racine pour court-circuiter 
+#les variables d'environnement en passant par un fichier de configuration direct
+# Didier : pour le poc pas de sauvegarde des datas de redpanda
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: redpanda
+    networks:
+      - poc_network
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --overprovisioned
+      - --node-id 0
+      - --check=false
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr redpanda:33145
+    ports:
+      - "19092:19092" # Kafka externe (pour ton IDE ou outils locaux)
+      - "18081:18081" # Schema Registry externe
+      - "18082:18082" # Proxy HTTP externe
+    #volumes:
+    #  - ./storage/redpanda_data:/var/lib/redpanda/data
+
+  # Console Web pour voir tes messages passer en temps réel
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: redpanda_console
+    networks:
+      - poc_network
+    # Didier : Modification pour monter le fichier console-config.yaml à la racine pour court-circuiter
+    volumes:
+      - ./console-config.yaml:/etc/redpanda/admin-config.yaml
+    environment:
+      - CONFIG_FILEPATH=/etc/redpanda/admin-config.yaml
+      - KAFKA_BROKERS=redpanda:9092
+      # On conserve les variables ci-dessous en secours, mais le fichier de config sera prioritaire
+      - KAFKA_SCHEMAREGISTRY_ENABLED=true
+      - KAFKA_SCHEMAREGISTRY_URLS=http://redpanda:8081
+      - CONSOLE_SCHEMA_REGISTRY_ENABLED=true
+      - CONSOLE_SCHEMA_REGISTRY_URLS=http://redpanda:8081
+      - SERVER_HTTP_PORT=8080
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      redpanda:
+        condition: service_started
+
+networks:
+  poc_network:
+    external: true

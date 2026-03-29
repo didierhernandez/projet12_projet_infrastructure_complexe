@@ -1,0 +1,55 @@
+# fichier docker-compose-orchestrator.yml à la racine
+# Stack 4: Kestra + Soda Agent
+# Gère l'orchestration (Kestra) et la qualité de la donnée (Soda)
+# Didier : à vérifier
+# Didier : L'autorisation de monter le socket est maintenant gérée proprement dans le bloc YAML pour éviter les conflits.
+# Didier : dans cette version il n'y a pas Soda ? à éclaircir
+
+services:
+  kestra:
+    image: kestra/kestra:latest
+    container_name: kestra_server
+    networks:
+      - poc_network
+    command: server standalone
+    user: "root" # Évite les problèmes de droits sur le socket Docker et les volumes
+    volumes:
+      # Persistance de la base de données interne de Kestra (tes workflows seront sauvés ici)
+      - ./orchestration/kestra/database:/app/storage
+      # Socket Docker indispensable pour lancer le conteneur Soda via les tâches Kestra
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8089:8080" # On utilise 8089 car Redpanda Console utilise déjà le 8080
+    env_file:
+      - .env  # <--- Ajoute cette ligne ici pour charger tes variables
+    environment:
+      TZ: Europe/Paris
+      KESTRA_CONFIGURATION: |
+        kestra:
+          # --- C'EST ICI QUE TOUT CHANGE ---
+          plugins:
+            configurations:
+              - type: io.kestra.plugin.scripts.runner.docker.Docker
+                values:
+                  # CETTE LIGNE est le trou de sécurité assumé pour le POC :
+                  volume-enabled: true
+          # ---------------------------------
+          queue:
+            type: h2
+          repository:
+            type: h2
+          storage:
+            type: local
+            local:
+              base-path: /app/storage
+          server:
+            basic-auth:
+              enabled: false
+        # Forcer H2 à écrire physiquement pour conserver les flux
+        datasources:
+          h2:
+            url: jdbc:h2:file:/app/storage/kestra;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+
+networks:
+  poc_network:
+    external: true

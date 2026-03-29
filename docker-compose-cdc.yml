@@ -1,0 +1,48 @@
+# Ce fichier docker-compose-cdc.yml est maintenu à la racine /poc/
+# Il représente l'Étape 6 : Stack "Connect" (Capture de Données Changées - CDC)
+# Lancement de Debezium uniquement après que la stack Storage soit prête.
+
+# Didier : Intérêt validé. Ce fichier est indispensable pour isoler la capture 
+# des données sources sans surcharger la stack de stockage ou de streaming.
+# Didier : Lancement à effectuer uniquement après 'storage' et 'streaming'.
+# Didier : Modification pour passer de Avro à JSON Converter pour compatibilité avec Spark.
+
+services:
+  debezium:
+    image: debezium/connect:2.4
+    container_name: debezium
+    networks:
+      - poc_network
+    # On injecte le .env pour que Debezium sache où trouver Redpanda et le Schema Registry
+    env_file:
+      - .env
+    environment:
+      # --- Configuration du Cluster Connect ---
+      - BOOTSTRAP_SERVERS=${REDPANDA_BROKERS}
+      - GROUP_ID=1
+      - CONFIG_STORAGE_TOPIC=my_connect_configs
+      - OFFSET_STORAGE_TOPIC=my_connect_offsets
+      - STATUS_STORAGE_TOPIC=my_connect_statuses
+      
+      # --- Configuration des Converters (Format JSON pour Spark) ---
+      # On remplace Avro par JsonConverter
+      - CONNECT_KEY_CONVERTER=org.apache.kafka.connect.json.JsonConverter
+      - CONNECT_VALUE_CONVERTER=org.apache.kafka.connect.json.JsonConverter
+      # On active les schémas dans le JSON car ton code Spark stream_to_minio.py 
+      # lit dans le noeud "payload" (spécifique au JSON avec schéma de Debezium)
+      - CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE=true
+      - CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE=true
+      
+      # --- Sécurité et Interne ---
+      - CONNECT_REST_ADVERTISED_HOST_NAME=debezium
+    ports:
+      - "8083:8083" # API REST pour configurer les connecteurs
+    # Note : Bien que Redpanda soit dans un autre fichier, Debezium ne peut pas 
+    # fonctionner si le broker n'est pas joignable sur le réseau 'poc_network'.
+    external_links:
+      - redpanda
+      - postgres
+
+networks:
+  poc_network:
+    external: true

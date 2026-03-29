@@ -1,0 +1,45 @@
+# fichier docker-compose-storage.yml   à la racine
+# Stack 1: MinIO + Postgres (RH)
+# Étape 4 ??? : Stack "Storage" - Fondations de données (S3 & RDBMS)
+# Didier : fichier à faire évoluer au fur et à mesure de l'avancement du projet
+
+services:
+  # --- STOCKAGE OBJET (MINIO) ---
+  minio:
+    image: minio/minio:latest # On passe sur l'image officielle plus fiable
+    container_name: minio
+    networks:
+      - poc_network
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
+    # Note : L'image officielle nécessite une commande pour créer les buckets au démarrage
+    # ou pour simplement lancer le serveur.
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./storage/minio_data:/data
+
+  # --- BASE DE DONNÉES RH (POSTGRES) ---
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    networks:
+      - poc_network
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - ./storage/postgres_data:/var/lib/postgresql/data
+    # Configuration cruciale pour le CDC (Debezium) de l'étape 6
+    command: ["postgres", "-c", "wal_level=logical"]
+
+networks:
+  # Utilisation du réseau que tu as créé avec 'docker network create poc_network'
+  poc_network:
+    external: true

@@ -1,0 +1,10 @@
+# fichier console-config.yaml à la racine 
+#pour court-circuiter les variables d'environnement en passant par un fichier de configuration direct
+
+kafka:
+  brokers: ["redpanda:9092"]
+
+# Ce bloc doit être à la racine du YAML, pas décalé sous kafka
+schemaRegistry:
+  enabled: true
+  urls: ["http://redpanda:8081"]
