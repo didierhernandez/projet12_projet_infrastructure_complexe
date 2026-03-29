@@ -1,0 +1,140 @@
+# fichier step1_ingestion_minio.yaml dans poc/kestra/flows
+# Flux Kestra Step 1 : Création du Bucket et Validation (Mode LIVE)
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+# de l'étape2 : Génération et Ingestion sans Soda
+#
+# Didier : Ce flow est conçu pour tourner APRÈS le Step 0.
+# Il NE SUPPRIME PLUS les données de MinIO au démarrage pour conserver l'historique !
+# Mais il purge les checkpoints Spark pour garantir un nouveau stream Live propre.
+# Attention : il faut toujours avoir lancé le Step 0 au moins une fois avant.
+# Dans une version prod, on utiliserait Delta Lake pour gérer ces transitions.
+# Didier : Alerte "Noms de Variables" : Il y a un décalage entre ce que ton script Spark attend et ce que ton Compose envoie.
+#        Ton script stream_to_minio.py cherche : AWS_ACCESS_KEY_ID et AWS_SECRET_ACCESS_KEY.
+#        Ton Compose envoie : MINIO_ACCESS_KEY et MINIO_SECRET_KEY.
+#        Résultat : Spark utilisera ses valeurs par défaut ("admin"/"password"). Si tu changes un jour tes accès dans le .env, Spark ne verra pas le changement.
+
+id: p12_step1_live
+namespace: poc.didier
+description: "Flux de données Live (Redpanda -> Spark Streaming -> MinIO) avec validation de delta"
+
+tasks:
+  - id: prepare_live_environment
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Nettoyage des checkpoints et des conteneurs résiduels SANS supprimer les données MinIO"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/spark/checkpoints:/tmp/spark_checkpoints
+        - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - echo "1/3 Purge des checkpoints Spark (essentiel pour le mode Streaming)..."
+      - find /tmp/spark_checkpoints -mindepth 1 -delete || true
+      
+      - echo "2/3 Nettoyage des conteneurs potentiellement restants..."
+      - docker stop generator_history spark_history_batch generator_live spark_streaming_ingestion redpanda || true
+      - docker rm generator_history spark_history_batch generator_live spark_streaming_ingestion redpanda || true
+      
+      - echo "3/3 Environnement prêt."
+
+  - id: build_images
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Didier : On s'assure que les images sont à jour comme dans le Step 0"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: host
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc:/app
+    commands:
+      - docker build -t poc-generator:latest /app/generator/
+      - docker build -t poc-spark-streaming:latest /app/spark/
+
+  - id: setup_minio_bucket
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Vérification/Création du bucket raw"
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      - mc mb --ignore-existing minio/raw
+
+  - id: start_infra_live
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Lancement du pipeline et comptage initial"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc:/app
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+    commands:
+      - echo "--- COMPTAGE INITIAL (AVANT LIVE) ---"
+      - |
+        # Didier : On compte les fichiers Parquet existants (l'historique du Step 0)
+        COUNT_BEFORE=$(find /data/raw/rh/salaries/ -name "*.parquet" 2>/dev/null | wc -l)
+        echo "$COUNT_BEFORE" > /data/count_before.txt
+        echo "Nombre de fichiers Parquet (Historique) détectés : $COUNT_BEFORE"
+
+      - echo "--- LANCEMENT DE LA STACK LIVE ---"
+      - docker compose -f /app/docker-compose-streaming.yml up -d redpanda
+      - sleep 10
+      - docker exec redpanda rpk topic create cdc.public.salaries || true
+      
+      - docker compose -f /app/docker-compose-generator.yml up -d generator-live
+      
+      - |
+        # Didier : On lance Spark en mode Streaming (SPARK_MODE n'est pas BATCH)
+        docker run -d --name spark_streaming_ingestion \
+          --network poc_network \
+          -e MINIO_ENDPOINT="http://minio:9000" \
+          -e AWS_ACCESS_KEY_ID="admin" \
+          -e AWS_SECRET_ACCESS_KEY="password" \
+          -v /home/dev/projects/p12/poc/spark/checkpoints:/opt/spark/checkpoints \
+          poc-spark-streaming:latest \
+          /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/stream_to_minio.py
+      
+      - echo "Captation du flux pendant 180 secondes..."
+      - sleep 180
+      
+      - echo "--- LOGS DE DEBUG ---"
+      - docker logs spark_streaming_ingestion --tail 20 || true
+
+  - id: stop_and_validate
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Arrêt et calcul de la performance du Live (Delta)"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+        - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - echo "Arrêt des services..."
+      - docker stop generator_live spark_streaming_ingestion redpanda || true
+      - docker rm generator_live spark_streaming_ingestion redpanda || true
+      
+      - echo "--- VALIDATION DU DELTA ---"
+      - |
+        # Didier : Validation basée sur l'augmentation du nombre de fichiers Parquet
+        COUNT_AFTER=$(find /data/raw/rh/salaries/ -name "*.parquet" 2>/dev/null | wc -l)
+        COUNT_BEFORE=$(cat /data/count_before.txt)
+        DELTA=$((COUNT_AFTER - COUNT_BEFORE))
+        
+        echo "Fichiers Parquet AVANT (Step 0) : $COUNT_BEFORE"
+        echo "Fichiers Parquet APRES (Step 0 + Step 1) : $COUNT_AFTER"
+        echo "Nouveaux fichiers produits par le Live : $DELTA"
+        
+        if [ "$COUNT_AFTER" -gt "$COUNT_BEFORE" ]; then
+          echo "SUCCÈS : Le flux Live a bien été ingéré (+$DELTA fichiers ajoutés à l'historique)."
+          exit 0
+        else
+          echo "ERREUR : Aucun nouveau fichier détecté. Le flux Live n'a rien produit."
+          exit 1
+        fi

@@ -1,0 +1,144 @@
+# fichier step0_ingestion_minio.yaml dans dans poc/kestra/flows
+# Flux Kestra Step 1 : Création du Bucket et Validation
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+#de l'étape2 : Génération et Ingestion sans Soda
+# Ton workflow Kestra pour la création de l'historique
+# Didier : tu devras copier/coller ce code directement dans l'interface web de Kestra (http://localhost:8089) 
+#dans l'onglet "Flows"
+# Didier : dans cette version, l'historique (step0) est indépendant du live (step1) 
+#et les fichiers sont nettyés indépendemment à chaque lancement de ce flow
+#donc, dans une version plus proche de la production, il faudra utiliser des outils de type Delta Lake et Apache Iceberg
+
+id: p12_step0_history
+namespace: poc.didier
+
+tasks:
+  - id: purge_history_traces
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/spark/checkpoints:/tmp/spark_checkpoints
+        - /home/dev/projects/p12/poc/storage/minio_data:/tmp/minio_data
+    commands:
+      - find /tmp/spark_checkpoints -mindepth 1 -delete || true
+      - rm -rf /tmp/minio_data/raw/* || true
+
+  - id: start_infra_history
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - |
+        cat <<EOF > docker-compose-history.yml
+        services:
+          redpanda:
+            image: docker.redpanda.com/redpandadata/redpanda:latest
+            container_name: redpanda
+            networks: [poc_network]
+            command: >
+              redpanda start --smp 1 --memory 1G --overprovisioned --node-id 0 --check=false
+              --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+              --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+              --schema-registry-addr internal://0.0.0.0:8081
+
+          spark-batch:
+            image: poc-spark-streaming:latest
+            container_name: spark_history_batch
+            networks: [poc_network]
+            environment:
+              - MINIO_ENDPOINT=http://minio:9000
+              - AWS_ACCESS_KEY_ID=admin
+              - AWS_SECRET_ACCESS_KEY=password
+              - REDPANDA_BROKERS=redpanda:9092
+              - SPARK_MODE=BATCH
+            volumes:
+              - /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs
+              - /home/dev/projects/p12/poc/spark/libs:/opt/spark/libs
+              - /home/dev/projects/p12/poc/generator/schemas:/opt/spark/schemas
+              - /home/dev/projects/p12/poc/spark/checkpoints:/opt/spark/checkpoints
+            command: >
+              /opt/spark/bin/spark-submit --master local[*] 
+              --jars /opt/spark/libs/*.jar /opt/spark/jobs/stream_to_minio.py
+
+          generator-history:
+            image: poc-generator-live:latest
+            container_name: generator_history
+            networks: [poc_network]
+            environment:
+              - GEN_MODE=HISTORY
+              - REDPANDA_BROKERS=redpanda:9092
+              - SCHEMA_REGISTRY_URL=http://redpanda:8081
+        networks:
+          poc_network:
+            external: true
+        EOF
+      - echo "Nettoyage automatique de la stack précédente"
+      - docker compose -f docker-compose-history.yml down --remove-orphans  --volumes
+      - echo "Lancement automatique de la nouvelle stack...puis attente de 15s"
+      - docker compose -f docker-compose-history.yml up -d
+      - sleep 15
+      - docker exec redpanda rpk topic create cdc.public.salaries || true
+
+  - id: monitor_data_stability
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: alpine:latest
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+    commands:
+      - |
+        echo "Début de la surveillance..."
+        PREVIOUS_SIZE=-1
+        STABLE_COUNT=0
+        # Sécurité : on ne boucle pas plus de 30 fois (5 minutes max)
+        for i in $(seq 1 30); do
+          # On récupère la taille, si le dossier n'existe pas encore, on met 0
+          CURRENT_SIZE=$(du -s /data/raw/rh/salaries/ 2>/dev/null | cut -f1)
+          CURRENT_SIZE=${CURRENT_SIZE:-0}
+          
+          echo "Tentative $i/30 - Taille actuelle : $CURRENT_SIZE KB"
+          
+          # Si la taille est > 0 et identique à la précédente
+          if [ "$CURRENT_SIZE" -eq "$PREVIOUS_SIZE" ] && [ "$CURRENT_SIZE" -gt 0 ]; then
+            STABLE_COUNT=$((STABLE_COUNT + 1))
+            echo "Données stables ($STABLE_COUNT/3)..."
+          else
+            STABLE_COUNT=0
+          fi
+          
+          if [ "$STABLE_COUNT" -eq 3 ]; then
+            echo "VÉRIFICATION OK : Les données sont sur MinIO."
+            exit 0
+          fi
+          
+          PREVIOUS_SIZE=$CURRENT_SIZE
+          sleep 10
+        done
+        echo "ERREUR : Timeout ou aucune donnée détectée après 5 minutes."
+        exit 1
+
+  - id: stop_and_validate
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+    commands:
+      # Option 1 : Arrêt propre par nom (plus robuste car indépendant du fichier YAML)
+      - docker stop generator_history spark_history_batch redpanda || true
+      - docker rm generator_history spark_history_batch redpanda || true
+      
+      # Validation
+      - echo "Comptage final des fichiers Parquet..."
+      - find /data/raw/rh/salaries/ -name "*.parquet" | wc -l
+      - echo "Liste des fichiers générés :"
+      - ls -lh /data/raw/rh/salaries/

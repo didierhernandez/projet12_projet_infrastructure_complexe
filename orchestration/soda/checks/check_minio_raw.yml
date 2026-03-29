@@ -1,0 +1,10 @@
+# Fichier check_minio_raw.yml     dans le dossier poc/soda/schecks
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+#de l'étape2 : Génération et Ingestion avec Soda
+# Ta "douane" Point A
+
+# Règle de qualité pour vérifier le bucket MinIO
+checks for dataset_sport:
+  # Vérifier que le fichier n'est pas vide
+  - row_count > 0
+  # On vérifiera plus tard le schéma exact avec soda-core-contracts

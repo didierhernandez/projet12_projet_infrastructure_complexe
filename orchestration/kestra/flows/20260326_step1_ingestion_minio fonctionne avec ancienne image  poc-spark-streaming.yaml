@@ -1,0 +1,182 @@
+# fichier step1_ingestion_minio.yaml dans poc/kestra/flows
+# Flux Kestra Step 1 : Création du Bucket et Validation
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+# de l'étape2 : Génération et Ingestion sans Soda
+# C'st un workflow Kestra
+# Didier : tu devras copier/coller ce code directement dans l'interface web de Kestra (http://localhost:8089) 
+# dans l'onglet "Flows"
+# Didier : pas d'implémentation de Soda dans cette version
+# Ce fichier YAML définit un "Flow" qui va piloter tes fichiers Docker Compose existants sans Soda
+# Ce flux mis à jour effectue désormais trois vérifications critiques : 
+# la présence du bucket, le lancement du pipeline, et la validation de l'écriture des fichiers
+# Didier : cela fonctionne avec le "LIVE"
+# Didier : ÉVOLUTION MAJEURE -> Ce flow est maintenant conçu pour tourner APRÈS le Step 0. 
+# Il NE SUPPRIME PLUS les données de MinIO au démarrage pour conserver l'historique !
+# Didier : attention, nettoyage automatique de la stack redpanda créée à la volée.
+# Didier : dans cette version le live fonctionne pendant 180 secondes cela permet à Minio d'enregistrer plus de 5 fichiers.
+# Didier : dans cette version, l'historique est créé avant le live (step0 puis step1).
+# Les conteneurs sont nettoyés indépendamment à chaque lancement de ces deux flows :
+#Attention : il faut toujours relancer step0 avant de lancer step1.
+#donc, dans une version plus proche de la production, il faudra utiliser des outils de type Delta Lake et Apache Iceberg
+
+id: p12_step1_complet
+namespace: poc.didier
+
+tasks:
+  - id: prepare_live_environment
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Nettoyage des checkpoints Spark et des conteneurs résiduels, SANS toucher aux données MinIO"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/spark/checkpoints:/tmp/spark_checkpoints
+        - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - echo "1/3 Purge des checkpoints Spark (pour forcer un nouveau stream propre)..."
+      - find /tmp/spark_checkpoints -mindepth 1 -delete || true
+      
+      - echo "2/3 Nettoyage de sécurité des conteneurs du Step 0..."
+      - docker stop generator_history spark_history_batch redpanda generator_live spark_streaming_ingestion redpanda_console || true
+      - docker rm generator_history spark_history_batch redpanda generator_live spark_streaming_ingestion redpanda_console || true
+      
+      - echo "3/3 Nettoyage terminé. Prêt pour le LIVE."
+
+  - id: setup_minio_bucket
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      - mc mb --ignore-existing minio/raw
+
+  - id: start_infra_ingestion
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc/storage/minio_data:/data # <--- Ajouté pour compter AVANT
+    commands:
+      - |
+        cat <<EOF > docker-compose-all.yml
+        services:
+          redpanda:
+            image: docker.redpanda.com/redpandadata/redpanda:latest
+            container_name: redpanda
+            networks: [poc_network]
+            command: >
+              redpanda start --smp 1 --memory 1G --overprovisioned --node-id 0 --check=false
+              --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+              --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+              --schema-registry-addr internal://0.0.0.0:8081
+            healthcheck:
+              test: ["CMD", "rpk", "cluster", "info"]
+              interval: 5s
+              timeout: 5s
+              retries: 10
+
+          spark-streaming:
+            image: poc-spark-streaming:latest
+            pull_policy: never
+            container_name: spark_streaming_ingestion
+            user: root
+            depends_on:
+              redpanda:
+                condition: service_healthy
+            networks: [poc_network]
+            environment:
+              - MINIO_ENDPOINT=http://minio:9000
+              - AWS_ACCESS_KEY_ID=admin
+              - AWS_SECRET_ACCESS_KEY=password
+              - REDPANDA_BROKERS=redpanda:9092
+              - SPARK_MODE=STREAMING
+            volumes:
+              - /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs
+              - /home/dev/projects/p12/poc/spark/libs:/opt/spark/libs
+              - /home/dev/projects/p12/poc/spark/checkpoints:/opt/spark/checkpoints
+            command: >
+              /opt/spark/bin/spark-submit
+              --master local[*]
+              --jars /opt/spark/libs/*.jar
+              /opt/spark/jobs/stream_to_minio.py
+
+          generator-live:
+            image: poc-generator-live:latest
+            pull_policy: never
+            container_name: generator_live
+            depends_on:
+              redpanda:
+                condition: service_healthy
+            networks: [poc_network]
+            restart: always
+            environment:
+              - GEN_MODE=LIVE
+              - REDPANDA_BROKERS=redpanda:9092
+              - SCHEMA_REGISTRY_URL=http://redpanda:8081
+
+        networks:
+          poc_network:
+            external: true
+        EOF
+      
+      - echo "COMPTAGE INITIAL DES FICHIERS..."
+      - COUNT_BEFORE=$(find /data/raw/rh/salaries/ \( -name "*.parquet" -o -name "xl.meta" \) 2>/dev/null | wc -l)
+      - echo "$COUNT_BEFORE" > /data/count_before.txt
+      - echo "Il y a actuellement $COUNT_BEFORE objets dans le dossier avant le Live."
+
+      - echo "Lancement de la stack LIVE via Compose..."
+      - docker compose -f docker-compose-all.yml up -d
+      
+      - echo "Attente intelligente de Redpanda (Healthcheck)..."
+      - |
+        until [ "$(docker inspect -f '{% raw %}{{.State.Health.Status}}{% endraw %}' redpanda)" == "healthy" ]; do
+          echo "Redpanda n'est pas encore prêt... attente 2s"
+          sleep 2
+        done
+      
+      - echo "Redpanda est HEALTHY. Création du topic..."
+      - docker exec redpanda rpk topic create cdc.public.salaries || true
+      
+      - echo "Ingestion LIVE en cours... attente de 180s"
+      - sleep 180
+      - echo "--- LOGS DU GENERATEUR (POUR DEBUG) ---"
+      - docker logs generator_live || true
+      - echo "--- LOGS DE SPARK ---"
+      - docker logs spark_streaming_ingestion || true
+
+  - id: stop_and_validate
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+        - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - echo "Arrêt de la stack LIVE..."
+      - docker stop generator_live spark_streaming_ingestion redpanda || true
+      - docker rm generator_live spark_streaming_ingestion redpanda || true
+      
+      - echo "Recherche physique des fichiers Parquet (Historique + Live)..."
+      - ls -R /data/raw/rh/salaries/ || true
+      - |
+        echo "Comptage des objets et calcul du delta..."
+        COUNT_AFTER=$(find /data/raw/rh/salaries/ \( -name "*.parquet" -o -name "xl.meta" \) 2>/dev/null | wc -l)
+        COUNT_BEFORE=$(cat /data/count_before.txt)
+        
+        echo "Objets AVANT : $COUNT_BEFORE"
+        echo "Objets APRES : $COUNT_AFTER"
+        
+        if [ "$COUNT_AFTER" -gt "$COUNT_BEFORE" ]; then
+          echo "SUCCÈS : Le LIVE a produit de nouveaux fichiers. La chaîne est opérationnelle."
+          exit 0
+        else
+          echo "ERREUR : Le nombre de fichiers n'a pas augmenté. Le LIVE n'a rien écrit."
+          exit 1
+        fi

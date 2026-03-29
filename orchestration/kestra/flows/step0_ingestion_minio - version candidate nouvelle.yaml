@@ -1,0 +1,120 @@
+# fichier step0_ingestion_minio.yaml dans dans poc/kestra/flows
+# Flux Kestra Step 1 : Création du Bucket et Validation
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+#de l'étape2 : Génération et Ingestion sans Soda
+# Ton workflow Kestra pour la création de l'historique
+# Didier : tu devras copier/coller ce code directement dans l'interface web de Kestra (http://localhost:8089) 
+#dans l'onglet "Flows"
+# Didier : dans cette version, l'historique (step0) est indépendant du live (step1) 
+#et les fichiers sont nettoyés indépendamment à chaque lancement de ce flow
+#donc, dans une version plus proche de la production, il faudra utiliser des outils de type Delta Lake et Apache Iceberg
+# Didier : Ajout d'une étape de build pour le générateur et spark suite à la mise en cohérence des noms des images utilisées, 
+# et mise à jour du docker run pour utiliser le nom d'image verrouillé
+
+id: p12_step0_history
+namespace: poc.didier
+description: "Ingestion de l'historique (Batch-like via Streaming) vers MinIO depuis le fichier csv"
+
+tasks:
+  - id: purge_history_traces
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/spark/checkpoints:/tmp/spark_checkpoints
+        - /home/dev/projects/p12/poc/storage/minio_data:/tmp/minio_data
+    commands:
+      - find /tmp/spark_checkpoints -mindepth 1 -delete || true
+      - rm -rf /tmp/minio_data/raw/* || true
+
+  - id: build_images
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Garantit que les images sont à jour avant de lancer l'historique"
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc:/app
+    commands:
+      - docker build -t poc-generator:latest /app/generator/
+      - docker build -t poc-spark-streaming:latest /app/spark/
+  
+  - id: start_infra_history
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc:/app
+    commands:
+      # Lancement de Redpanda (via le compose centralisé)
+      - docker compose -f /app/docker-compose-streaming.yml up -d redpanda
+      
+      # Didier : On garde le sleep de 15s pour laisser Redpanda respirer au démarrage
+      - echo "Attente de 15s pour l'initialisation de Redpanda..."
+      - sleep 15
+      
+      # Création manuelle du topic pour éviter que Spark ne démarre sur un vide
+      - docker exec redpanda rpk topic create cdc.public.salaries || true
+
+      # Lancement du Générateur en mode HISTORY
+      - docker compose -f /app/docker-compose-generator.yml up -d generator-history
+      
+      # Lancement direct du container Spark avec la nouvelle image officielle Apache
+      - |
+        docker run -d --name spark_history_batch \
+          --network poc_network \
+          -e MINIO_ENDPOINT="http://minio:9000" \
+          -e AWS_ACCESS_KEY_ID="admin" \
+          -e AWS_SECRET_ACCESS_KEY="password" \
+          -v /home/dev/projects/p12/poc/spark/checkpoints:/opt/spark/checkpoints \
+          poc-spark-streaming:latest \
+          /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/stream_to_minio.py
+
+  - id: monitor_data_stability
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: alpine:latest
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+    commands:
+      - |
+        echo "Surveillance de l'écriture sur MinIO..."
+        PREVIOUS_SIZE=-1
+        STABLE_COUNT=0
+        for i in $(seq 1 30); do
+          CURRENT_SIZE=$(du -s /data/raw/rh/salaries/ 2>/dev/null | cut -f1)
+          CURRENT_SIZE=${CURRENT_SIZE:-0}
+          echo "Tentative $i/30 - Taille : $CURRENT_SIZE KB"
+          if [ "$CURRENT_SIZE" -eq "$PREVIOUS_SIZE" ] && [ "$CURRENT_SIZE" -gt 0 ]; then
+            STABLE_COUNT=$((STABLE_COUNT + 1))
+          else
+            STABLE_COUNT=0
+          fi
+          if [ "$STABLE_COUNT" -eq 3 ]; then
+            echo "VÉRIFICATION OK : Données historiques stabilisées."
+            exit 0
+          fi
+          PREVIOUS_SIZE=$CURRENT_SIZE
+          sleep 10
+        done
+        exit 1
+
+  - id: stop_and_validate
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+    commands:
+      - docker stop generator_history spark_history_batch redpanda || true
+      - docker rm generator_history spark_history_batch redpanda || true
+      - echo "Nombre final de fichiers Parquet créés :"
+      - find /data/raw/rh/salaries/ -name "*.parquet" | wc -l

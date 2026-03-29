@@ -1,0 +1,120 @@
+Action 5 : Déploiement et Exécution du Flux Kestra
+Ouvre Kestra sur http://localhost:8089.
+Crée un nouveau Flow et colle le code YAML de la Step 1 (celui qui fait le mc mb pour créer le bucket, lance docker-compose-ingestion.yml, puis docker-compose-generator.yml en mode live, et valide les fichiers).
+Clique sur "Execute". Kestra va maintenant lancer ton code Spark stream_to_minio.py
+
+Flow p12_step1_complet : 
+fait le mc mb pour créer le bucket, 
+lance docker-compose-ingestion.yml, 
+puis docker-compose-generator.yml en mode live, 
+et valide les fichiers
+
+id: p12_step1_complet
+namespace: poc.didier
+
+tasks:
+  - id: setup_minio_bucket
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      - mc mb --ignore-existing minio/raw
+
+  - id: start_infra_ingestion
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - |
+        cat <<EOF > docker-compose-all.yml
+        services:
+          redpanda:
+            image: docker.redpanda.com/redpandadata/redpanda:latest
+            container_name: redpanda
+            networks: [poc_network]
+            command: >
+              redpanda start --smp 1 --memory 1G --overprovisioned --node-id 0 --check=false 
+              --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092 
+              --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092 
+              --schema-registry-addr internal://0.0.0.0:8081
+          
+          redpanda-console:
+            image: docker.redpanda.com/redpandadata/console:latest
+            container_name: redpanda_console
+            networks: [poc_network]
+            environment:
+              - KAFKA_BROKERS=redpanda:9092
+              - KAFKA_SCHEMAREGISTRY_URLS=http://redpanda:8081
+            ports: ["8081:8080"]
+
+          spark-streaming:
+            image: poc-spark-streaming:latest
+            container_name: spark_streaming_ingestion
+            networks: [poc_network]
+            environment:
+              - MINIO_ENDPOINT=http://minio:9000
+              - MINIO_ACCESS_KEY=admin
+              - MINIO_SECRET_KEY=password
+              - REDPANDA_BROKERS=redpanda:9092
+            volumes:
+              - /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs
+              - /home/dev/projects/p12/poc/spark/libs:/opt/spark/libs
+              - /home/dev/projects/p12/poc/generator/schemas:/opt/spark/schemas
+              - /home/dev/projects/p12/poc/spark/checkpoints:/opt/spark/checkpoints
+            command: >
+              /opt/spark/bin/spark-submit 
+              --master local[*] 
+              --packages org.apache.spark:spark-avro_2.12:3.5.0
+              --jars /opt/spark/libs/*.jar
+              /opt/spark/jobs/stream_to_minio.py
+
+          generator-live:
+            image: poc-generator-live:latest
+            container_name: generator_live
+            networks: [poc_network]
+            restart: always
+            environment:
+              - GEN_MODE=LIVE
+              - REDPANDA_BROKERS=redpanda:9092
+              - SCHEMA_REGISTRY_URL=http://redpanda:8081
+
+        networks:
+          poc_network:
+            external: true
+        EOF
+      - docker compose -f docker-compose-all.yml down --remove-orphans
+      - docker compose -f docker-compose-all.yml up -d
+      - sleep 15
+      - docker exec redpanda rpk topic create cdc.public.salaries || true
+      - echo "Ingestion en cours... attente de 120s"
+      - sleep 120
+      - echo "Nettoyage automatique de la stack..."
+      - docker compose -f docker-compose-all.yml down # <--- Ajout du nettoyage automatique
+
+  - id: validate_parquet_files
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      - "echo 'Liste des fichiers trouvés :'"
+      - mc ls -r minio/raw/rh/salaries/
+      - |
+        COUNT=$(mc ls -r minio/raw/rh/salaries/ | wc -l)
+        if [ "$COUNT" -gt 0 ]; then
+          echo "SUCCÈS : $COUNT fichiers détectés."
+        else
+          echo "ERREUR : Aucun fichier trouvé."
+          exit 1
+        fi

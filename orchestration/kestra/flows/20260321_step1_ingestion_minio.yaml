@@ -1,0 +1,146 @@
+# fichier step1_ingestion_minio.yaml dans dans poc/kestra/flows
+# Flux Kestra Step 1 : Création du Bucket et Validation
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+#de l'étape2 : Génération et Ingestion sans Soda
+# Ton workflow Kestra
+# Didier : tu devras copier/coller ce code directement dans l'interface web de Kestra (http://localhost:8089) 
+#dans l'onglet "Flows"
+# Didier : pas d'implémentation de Soda dans cette version
+# Ce fichier YAML définit un "Flow" qui va piloter tes fichiers Docker Compose existants sans Soda
+# Ce flux mis à jour effectue désormais trois vérifications critiques : 
+#la présence du bucket, le lancement du pipeline, et la validation de l'écriture des fichiers
+# Didier : cela fonctionne qu'avec le "LIVE" sans "HISOTRY" et sans la console redpanda lisible et avec peu de création de fichier paquet
+# Didier : attention, nettoyage autormatique de la stack redpanda créée à la volée
+# Didier : dans cette version le live fonctionne pendant 90 secondes maximum cela permet à Minio d'enregistrer plus de 5 fichiers
+
+id: p12_step1_complet
+namespace: poc.didier
+
+tasks:
+  - id: purge_local_traces
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Nettoyage des checkpoints Spark ET des données Minio pour un test pur"
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/spark/checkpoints:/tmp/spark_checkpoints
+        - /home/dev/projects/p12/poc/storage/minio_data:/tmp/minio_data
+    commands:
+      - echo "1/3 Purge des checkpoints Spark..."
+      - find /tmp/spark_checkpoints -mindepth 1 -delete || true
+      
+      - echo "2/3 Purge des données Minio (Raw)..."
+      # On supprime tout dans le dossier raw pour forcer Spark à recréer les fichiers
+      - rm -rf /tmp/minio_data/raw/* || true
+      
+      - echo "3/3 Nettoyage terminé. Prêt pour un test à blanc."
+
+  - id: setup_minio_bucket
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      # On s'assure que le bucket existe après la purge
+      - mc mb --ignore-existing minio/raw
+
+  - id: start_infra_ingestion
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - |
+        cat <<EOF > docker-compose-all.yml
+        services:
+          redpanda:
+            image: docker.redpanda.com/redpandadata/redpanda:latest
+            container_name: redpanda
+            networks: [poc_network]
+            command: >
+              redpanda start --smp 1 --memory 1G --overprovisioned --node-id 0 --check=false
+              --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+              --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+              --schema-registry-addr internal://0.0.0.0:8081
+
+          redpanda-console:
+            image: docker.redpanda.com/redpandadata/console:latest
+            container_name: redpanda_console
+            networks: [poc_network]
+            environment:
+              - KAFKA_BROKERS=redpanda:9092
+              - KAFKA_SCHEMAREGISTRY_URLS=http://redpanda:8081
+            ports:
+              - "8081:8080"
+
+          spark-streaming:
+            image: poc-spark-streaming:latest
+            container_name: spark_streaming_ingestion
+            user: root
+            networks: [poc_network]
+            environment:
+              - MINIO_ENDPOINT=http://minio:9000
+              - AWS_ACCESS_KEY_ID=admin
+              - AWS_SECRET_ACCESS_KEY=password
+              - REDPANDA_BROKERS=redpanda:9092
+            volumes:
+              - /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs
+              - /home/dev/projects/p12/poc/spark/libs:/opt/spark/libs
+              - /home/dev/projects/p12/poc/generator/schemas:/opt/spark/schemas
+              - /home/dev/projects/p12/poc/spark/checkpoints:/opt/spark/checkpoints
+            command: >
+              /opt/spark/bin/spark-submit
+              --master local[*]
+              --jars /opt/spark/libs/*.jar
+              /opt/spark/jobs/stream_to_minio.py
+
+          generator-live:
+            image: poc-generator-live:latest
+            container_name: generator_live
+            networks: [poc_network]
+            restart: always
+            environment:
+              - GEN_MODE=LIVE
+              - REDPANDA_BROKERS=redpanda:9092
+              - SCHEMA_REGISTRY_URL=http://redpanda:8081
+
+        networks:
+          poc_network:
+            external: true
+        EOF
+      - docker compose -f docker-compose-all.yml down --remove-orphans --volumes
+      - docker compose -f docker-compose-all.yml up -d
+      - sleep 20
+      - docker exec redpanda rpk topic create cdc.public.salaries || true
+      - echo "Ingestion en cours... attente de 90s"
+      - sleep 90
+      - docker logs spark_streaming_ingestion
+      - echo "Nettoyage automatique de la stack..."
+      - docker compose -f docker-compose-all.yml down --volumes
+
+  - id: validate_parquet_files
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: alpine:latest
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+    commands:
+      - echo "Recherche physique des fichiers Parquet..."
+      - ls -R /data/raw/rh/salaries/ || true
+      - |
+        echo "Comptage des nouveaux objets..."
+        COUNT=$(find /data/raw/rh/salaries/ \( -name "*.parquet" -o -name "xl.meta" \) 2>/dev/null | wc -l)
+        if [ "$COUNT" -gt 0 ]; then
+          echo "SUCCÈS : $COUNT objets Parquet détectés. L'ingestion a fonctionné durant ce test."
+          exit 0
+        else
+          echo "ERREUR : Aucun fichier trouvé. L'ingestion a échoué durant ce test."
+          exit 1
+        fi

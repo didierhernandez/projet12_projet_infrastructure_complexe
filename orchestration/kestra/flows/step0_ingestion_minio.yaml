@@ -1,0 +1,89 @@
+# fichier step0_ingestion_minio.yaml dans poc/kestra/flows
+# Flux Kestra Step 0 : Création du Bucket et Validation
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+# de l'étape 2 : Génération et Ingestion sans Soda
+# Ton workflow Kestra pour la création de l'historique
+# Didier : tu devras copier/coller ce code directement dans l'interface web de Kestra (http://localhost:8089) 
+# dans l'onglet "Flows"
+# Didier : dans cette version, l'historique (step0) est indépendant du live (step1) 
+# et les fichiers sont nettoyés indépendamment à chaque lancement de ce flow
+# donc, dans une version plus proche de la production, il faudra utiliser des outils de type Delta Lake et Apache Iceberg
+# Didier : Ajout d'une étape de build pour le générateur et spark suite à la mise en cohérence des noms des images utilisées, 
+# et mise à jour du docker run pour utiliser le nom d'image verrouillé
+# Attention : Didier : cette version n'est pas la même que celle sur Kestra en cours, notamment plus de containerImage
+
+id: p12_step0_history
+namespace: poc.didier
+
+tasks:
+  - id: cleanup_and_prepare
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Nettoyage complet pour repartir à zéro"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    commands:
+      - docker stop generator_history spark_history_batch redpanda || true
+      - docker rm generator_history spark_history_batch redpanda || true
+      # On purge les checkpoints physiquement
+      - rm -rf /home/dev/projects/p12/poc/spark/checkpoints/* || true
+
+  - id: setup_infra_and_wait_gen
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Lancer Redpanda et attendre que le Générateur FINISSE l'historique"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes: ["/var/run/docker.sock:/var/run/docker.sock", "/home/dev/projects/p12/poc:/app"]
+    commands:
+      - docker compose -f /app/docker-compose-streaming.yml up -d redpanda
+      - sleep 10
+      - docker exec redpanda rpk topic create cdc.public.salaries || true
+      # On lance le générateur et on ATTEND qu'il s'arrête (mode -it ou sans -d)
+      - echo "Génération de l'historique dans Kafka..."
+      - docker run --name generator_history --network poc_network -e GEN_MODE=HISTORY poc-generator:latest
+      - echo "Générateur terminé. Kafka est plein."
+
+  - id: clean_minio_bucket
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      - mc mb --ignore-existing minio/raw
+      - mc rm --recursive --force minio/raw/rh/salaries/ || true
+
+  - id: run_spark_batch
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Maintenant que Kafka est plein, Spark traite tout d'un coup"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    commands:
+      - |
+        docker run --name spark_history_batch \
+          --network poc_network \
+          -e SPARK_MODE="BATCH" \
+          -e MINIO_ENDPOINT="http://minio:9000" \
+          -e AWS_ACCESS_KEY_ID="admin" \
+          -e AWS_SECRET_ACCESS_KEY="password" \
+          poc-spark-streaming:latest \
+          /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/stream_to_minio.py
+      # Ici, on ne met pas de -d (detach), Kestra attendra que Spark finisse de lui-même
+
+  - id: validation_finale
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes: ["/home/dev/projects/p12/poc/storage/minio_data:/data"]
+    commands:
+      - echo "Vérification des fichiers Parquet..."
+      - find /data/raw/rh/salaries/ -name "*.parquet" | wc -l

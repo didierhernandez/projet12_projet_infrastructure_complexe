@@ -1,0 +1,167 @@
+# fichier step0_ingestion_minio.yaml dans poc/kestra/flows
+# Flux Kestra Step 0 : Création du Bucket et Validation
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+# de l'étape 2 : Génération et Ingestion sans Soda
+# Ton workflow Kestra pour la création de l'historique
+# Didier : tu devras copier/coller ce code directement dans l'interface web de Kestra (http://localhost:8089) 
+# dans l'onglet "Flows"
+# Didier : dans cette version, l'historique (step0) est indépendant du live (step1) 
+# et les fichiers sont nettoyés indépendamment à chaque lancement de ce flow
+# donc, dans une version plus proche de la production, il faudra utiliser des outils de type Delta Lake et Apache Iceberg
+# Didier : Ajout d'une étape de build pour le générateur et spark suite à la mise en cohérence des noms des images utilisées, 
+# et mise à jour du docker run pour utiliser le nom d'image verrouillé
+# Attention : Didier : cette version n'est pas la même que celle sur Kestra en cours, notamment plus de containerImage
+
+id: p12_step0_history
+namespace: poc.didier
+description: "Ingestion de l'historique (Batch-like via Streaming) vers MinIO depuis le fichier csv"
+
+tasks:
+  - id: cleanup_before_start
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Didier : On supprime les vieux conteneurs pour éviter les conflits de nom et on nettoie MinIO"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+        - /home/dev/projects/p12/poc/spark/checkpoints:/tmp/spark_checkpoints
+    commands:
+      - echo "Nettoyage des anciens conteneurs..."
+      - docker stop generator_history spark_history_batch redpanda || true
+      - docker rm generator_history spark_history_batch redpanda || true
+      - echo "Nettoyage des anciennes données MinIO (pour un historique propre)..."
+      # Didier : On supprime le dossier complet, pas juste le contenu, 
+      # sinon Spark refuse d'écrire avec l'erreur "path already exists"
+      - rm -rf /data/raw/rh/salaries || true
+      - echo "Purge des checkpoints Spark..."
+      - find /tmp/spark_checkpoints -mindepth 1 -delete || true
+
+  - id: build_images
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Didier : On s'assure que les images sont à jour"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: host
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc:/app
+    commands:
+      - docker build -t poc-generator:latest /app/generator/
+      - docker build -t poc-spark-streaming:latest /app/spark/
+
+  - id: setup_minio_bucket
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Vérification/Création du bucket raw (Crucial après un redémarrage !)"
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      # Didier : S'assure que le bucket 'raw' existe bien avant que Spark n'essaie d'y écrire
+      - mc mb --ignore-existing minio/raw
+
+  - id: start_infra_history
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Lancement de Redpanda, du Générateur (Historique) et de Spark (Batch)"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc:/app
+    commands:
+      - docker compose -f /app/docker-compose-streaming.yml up -d redpanda
+      - sleep 10
+      - docker exec redpanda rpk topic create cdc.public.salaries || true
+      - docker compose -f /app/docker-compose-generator.yml up -d generator-history
+      - |
+        # Lancement de Spark en mode BATCH
+        docker run -d --name spark_history_batch \
+          --network poc_network \
+          -e SPARK_MODE="BATCH" \
+          -e MINIO_ENDPOINT="http://minio:9000" \
+          -e AWS_ACCESS_KEY_ID="admin" \
+          -e AWS_SECRET_ACCESS_KEY="password" \
+          -v /home/dev/projects/p12/poc/spark/checkpoints:/opt/spark/checkpoints \
+          poc-spark-streaming:latest \
+          /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/stream_to_minio.py
+
+  - id: wait_for_completion
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Boucle d'attente sur la taille du dossier MinIO"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+    commands:
+      - |
+        echo "Surveillance de la taille du dossier MinIO..."
+        PREVIOUS_SIZE=-1
+        STABLE_COUNT=0
+        MAX_RETRIES=30
+        
+        for i in $(seq 1 $MAX_RETRIES); do
+          # On utilise du pour obtenir la taille en KB du dossier
+          CURRENT_SIZE=$(du -sk /data/raw/rh/salaries 2>/dev/null | cut -f1 || echo 0)
+          echo "Essai $i/$MAX_RETRIES - Taille actuelle : $CURRENT_SIZE KB"
+          
+          # Si la taille est > 0 et identique à la précédente
+          if [ "$CURRENT_SIZE" -eq "$PREVIOUS_SIZE" ] && [ "$CURRENT_SIZE" -gt 0 ]; then
+            STABLE_COUNT=$((STABLE_COUNT + 1))
+            echo "Données stables ($STABLE_COUNT/3)..."
+          else
+            STABLE_COUNT=0
+          fi
+          
+          if [ "$STABLE_COUNT" -eq 3 ]; then
+            echo "VÉRIFICATION OK : Les données sont sur MinIO."
+            exit 0
+          fi
+          
+          PREVIOUS_SIZE=$CURRENT_SIZE
+          sleep 10
+        done
+        echo "ERREUR : Timeout ou aucune donnée détectée après 5 minutes."
+        exit 1
+
+  - id: stop_and_validate
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Didier : Arrêt des services et vérification de la présence des données"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc/storage/minio_data:/data
+    commands:
+      # Didier : On regarde les logs de Spark avant de le supprimer, 
+      # c'est crucial pour comprendre pourquoi le dossier est vide après un plantage.
+      - echo "--- LOGS DE DEBUG SPARK ---"
+      - docker logs spark_history_batch --tail 50 || true
+      
+      - echo "--- NETTOYAGE ---"
+      - docker stop generator_history spark_history_batch redpanda || true
+      - docker rm generator_history spark_history_batch redpanda || true
+      
+      - echo "--- VALIDATION DE L'HISTORIQUE ---"
+      # Didier : Le 'mkdir -p' évite que la commande 'find' plante si Spark n'a rien généré.
+      - mkdir -p /data/raw/rh/salaries/
+      - |
+        COUNT=$(find /data/raw/rh/salaries/ -name "*.parquet" | wc -l)
+        echo "Nombre de fichiers Parquet détectés : $COUNT"
+        if [ "$COUNT" -gt 0 ]; then
+          echo "SUCCÈS : L'historique a été généré avec succès."
+          exit 0
+        else
+          echo "ERREUR : Le dossier est vide. Vérifie les logs de Spark ci-dessus."
+          exit 1
+        fi

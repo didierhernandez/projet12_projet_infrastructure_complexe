@@ -1,0 +1,12 @@
+# Fichier configuration.yml  dans poc/soda
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+#de l'étape2 : Génération et Ingestion avec Soda
+# Connexion aux sources (MinIO/Postgres)
+
+# Connexion à ta zone brute (MinIO S3)
+data_source minio_raw:
+  type: s3
+  access_key_id: ${MINIO_ACCESS_KEY}
+  secret_access_key: ${MINIO_SECRET_KEY}
+  endpoint_url: ${MINIO_ENDPOINT}
+  region_name: ${MINIO_REGION}

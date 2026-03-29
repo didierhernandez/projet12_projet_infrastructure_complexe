@@ -1,0 +1,218 @@
+Action 5 : Déploiement et Exécution du Flux Kestra
+Ouvre Kestra sur http://localhost:8089.
+Crée un nouveau Flow et colle le code YAML de la Step 1 (celui qui fait le mc mb pour créer le bucket, lance docker-compose-ingestion.yml, puis docker-compose-generator.yml en mode live, et valide les fichiers).
+Clique sur "Execute". Kestra va maintenant lancer ton code Spark stream_to_minio.py
+
+Flow p12_step1_complet : 
+fait le mc mb pour créer le bucket, 
+lance docker-compose-ingestion.yml, 
+puis docker-compose-generator.yml en mode live, 
+et valide les fichiers
+
+id: p12_step1_complet
+namespace: poc.didier
+
+tasks:
+  - id: setup_minio_bucket
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      - mc mb --ignore-existing minio/raw
+
+  - id: start_infra_ingestion
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - |
+        cat <<EOF > docker-compose-all.yml
+        services:
+          redpanda:
+            image: docker.redpanda.com/redpandadata/redpanda:latest
+            container_name: redpanda
+            networks: [poc_network]
+            command: ["redpanda", "start", "--smp", "1", "--memory", "1G", "--overprovisioned", "--node-id", "0", "--check=false", "--kafka-addr", "internal://0.0.0.0:9092,external://0.0.0.0:19092", "--advertise-kafka-addr", "internal://redpanda:9092,external://localhost:19092"]
+          
+          redpanda-console:
+            image: docker.redpanda.com/redpandadata/console:latest
+            container_name: redpanda_console
+            networks: [poc_network]
+            environment:
+              - KAFKA_BROKERS=redpanda:9092
+            ports: ["8081:8080"]
+
+          spark-streaming:
+            image: poc-spark-streaming:latest
+            container_name: spark_streaming_ingestion
+            networks: [poc_network]
+            environment:
+              - MINIO_ENDPOINT=http://minio:9000
+              - MINIO_ACCESS_KEY=admin
+              - MINIO_SECRET_KEY=password
+              - REDPANDA_BROKERS=redpanda:9092
+            command: /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/stream_to_minio.py
+
+          generator-live:
+            image: poc-generator-live:latest
+            container_name: generator_live
+            networks: [poc_network]
+            restart: always
+            environment:
+              - GEN_MODE=LIVE
+              - REDPANDA_BROKERS=redpanda:9092
+
+        networks:
+          poc_network:
+            external: true
+        EOF
+      # --- LA CORRECTION EST ICI ---
+      # On nettoie d'éventuels restes d'une exécution précédente
+      - docker compose -f docker-compose-all.yml down --remove-orphans
+      # On lance proprement
+      - docker compose -f docker-compose-all.yml up -d
+
+  - id: wait_for_data
+    type: io.kestra.plugin.scripts.shell.Commands
+    # On ajoute une image légère pour éviter que le runner Docker ne panique
+    containerImage: busybox
+    commands:
+      - sleep 60
+
+  - id: validate_parquet_files
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      - mc ls -r minio/raw/rh/salaries/
+      - |
+        COUNT=$(mc ls -r minio/raw/rh/salaries/ | wc -l)
+        if [ "$COUNT" -gt 0 ]; then
+          echo "SUCCÈS : $COUNT fichiers de données détectés."
+        else
+          echo "ERREUR : Aucun fichier."
+          exit 1
+        fi
+
+Logs de p12_step1_complet
+
+2026-03-19T12:27:34.465556Z DEBUG Using task runner 'io.kestra.plugin.scripts.runner.docker.Docker'
+2026-03-19T12:27:35.174529Z TRACE Container created: efa0e1e4819f6d595596a7d293e6f414e3aa3bf287630a45f210572297b0fe8e
+2026-03-19T12:27:35.194694Z TRACE Volume created: 69f9bb5d97b6178794cc7079b8b44303d66ceeba803d41bf04c3eabe81818a5b
+2026-03-19T12:27:35.588602Z DEBUG Starting command with container id efa0e1e4819f6d595596a7d293e6f414e3aa3bf287630a45f210572297b0fe8e [/bin/sh -c set -e
+mc mb --ignore-existing minio/raw]
+2026-03-19T12:27:36.396274Z INFO Bucket created successfully `minio/raw`.
+2026-03-19T12:27:36.638561Z DEBUG Command succeed with exit code 0
+2026-03-19T12:27:36.860289Z TRACE Container deleted: efa0e1e4819f6d595596a7d293e6f414e3aa3bf287630a45f210572297b0fe8e
+2026-03-19T12:27:36.865941Z TRACE Volume deleted: 69f9bb5d97b6178794cc7079b8b44303d66ceeba803d41bf04c3eabe81818a5b
+2026-03-19T12:27:36.868582Z TRACE Captured 0 output file(s).
+2026-03-19T12:27:37.010397Z DEBUG Using task runner 'io.kestra.plugin.scripts.runner.docker.Docker'
+2026-03-19T12:27:37.252166Z TRACE Container created: f10dacc691487b412e939e56961c69fdfe672c4b6ae521c7f75777c5b3368cde
+2026-03-19T12:27:37.261169Z TRACE Volume created: 8e22a89269fc69c7b37288f041a0509c9387316f9f59ba46950abf72c7e6e1d7
+2026-03-19T12:27:37.632949Z DEBUG Starting command with container id f10dacc691487b412e939e56961c69fdfe672c4b6ae521c7f75777c5b3368cde [/bin/sh -c set -e
+cat <<EOF > docker-compose-all.yml
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: redpanda
+    networks: [poc_network]
+    command: ["redpanda", "start", "--smp", "1", "--memory", "1G", "--overprovisioned", "--node-id", "0", "--check=false", "--kafka-addr", "internal://0.0.0.0:9092,external://0.0.0.0:19092", "--advertise-kafka-addr", "internal://redpanda:9092,external://localhost:19092"]
+  
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: redpanda_console
+    networks: [poc_network]
+    environment:
+      - KAFKA_BROKERS=redpanda:9092
+    ports: ["8081:8080"]
+
+  spark-streaming:
+    image: poc-spark-streaming:latest
+    container_name: spark_streaming_ingestion
+    networks: [poc_network]
+    environment:
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=admin
+      - MINIO_SECRET_KEY=password
+      - REDPANDA_BROKERS=redpanda:9092
+    command: /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/stream_to_minio.py
+
+  generator-live:
+    image: poc-generator-live:latest
+    container_name: generator_live
+    networks: [poc_network]
+    restart: always
+    environment:
+      - GEN_MODE=LIVE
+      - REDPANDA_BROKERS=redpanda:9092
+
+networks:
+  poc_network:
+    external: true
+EOF
+
+docker compose -f docker-compose-all.yml down --remove-orphans
+docker compose -f docker-compose-all.yml up -d]
+2026-03-19T12:27:39.081574Z ERROR time="2026-03-19T12:27:39Z" level=warning msg="Warning: No resource found to remove for project \"3ifgikelcw14swjthfiwrs\"."
+2026-03-19T12:27:39.216996Z ERROR  Container redpanda_console Creating 
+2026-03-19T12:27:39.216886Z ERROR  Container redpanda Creating 
+2026-03-19T12:27:39.217070Z ERROR  Container spark_streaming_ingestion Creating 
+2026-03-19T12:27:39.219211Z ERROR  Container generator_live Creating 
+2026-03-19T12:27:39.516094Z ERROR  Container generator_live Created 
+2026-03-19T12:27:39.533599Z ERROR  Container redpanda_console Created 
+2026-03-19T12:27:39.549380Z ERROR  Container redpanda Created 
+2026-03-19T12:27:39.550580Z ERROR  Container spark_streaming_ingestion Created 
+2026-03-19T12:27:39.555478Z ERROR  Container spark_streaming_ingestion Starting 
+2026-03-19T12:27:39.555342Z ERROR  Container redpanda Starting 
+2026-03-19T12:27:39.555424Z ERROR  Container redpanda_console Starting 
+2026-03-19T12:27:39.555199Z ERROR  Container generator_live Starting 
+2026-03-19T12:27:40.020230Z ERROR  Container redpanda Started 
+2026-03-19T12:27:40.215138Z ERROR  Container spark_streaming_ingestion Started 
+2026-03-19T12:27:40.337775Z ERROR  Container redpanda_console Started 
+2026-03-19T12:27:40.474326Z ERROR  Container generator_live Started 
+2026-03-19T12:27:41.602482Z DEBUG Command succeed with exit code 0
+2026-03-19T12:27:42.442192Z TRACE Container deleted: f10dacc691487b412e939e56961c69fdfe672c4b6ae521c7f75777c5b3368cde
+2026-03-19T12:27:42.571564Z TRACE Volume deleted: 8e22a89269fc69c7b37288f041a0509c9387316f9f59ba46950abf72c7e6e1d7
+2026-03-19T12:27:42.572825Z TRACE Captured 0 output file(s).
+2026-03-19T12:27:42.646388Z DEBUG Using task runner 'io.kestra.plugin.scripts.runner.docker.Docker'
+2026-03-19T12:27:44.297869Z TRACE Container created: ecf02d2882f047259009028f108db25e6ccb047242f5f949b78f6d754d63f083
+2026-03-19T12:27:44.335741Z TRACE Volume created: fdfac73499387a5eb69b4651af0416253c10d4015798ee076026039a4a4b571f
+2026-03-19T12:27:45.357602Z DEBUG Starting command with container id ecf02d2882f047259009028f108db25e6ccb047242f5f949b78f6d754d63f083 [/bin/sh -c set -e
+sleep 60]
+2026-03-19T12:28:45.938715Z DEBUG Command succeed with exit code 0
+2026-03-19T12:28:46.018014Z TRACE Container deleted: ecf02d2882f047259009028f108db25e6ccb047242f5f949b78f6d754d63f083
+2026-03-19T12:28:46.022237Z TRACE Volume deleted: fdfac73499387a5eb69b4651af0416253c10d4015798ee076026039a4a4b571f
+2026-03-19T12:28:46.024333Z TRACE Captured 0 output file(s).
+2026-03-19T12:28:46.874905Z DEBUG Using task runner 'io.kestra.plugin.scripts.runner.docker.Docker'
+2026-03-19T12:28:47.069936Z TRACE Container created: c5cbcdfe29f66331f5c34f21ab145139e1ed0f0ee2ce8cfbec390b1b6e8fafc9
+2026-03-19T12:28:47.080595Z TRACE Volume created: ce28eb583e4f1577114d2b99766b3c309b3c7caf7e96189bf52ec420445d0e77
+2026-03-19T12:28:47.341804Z DEBUG Starting command with container id c5cbcdfe29f66331f5c34f21ab145139e1ed0f0ee2ce8cfbec390b1b6e8fafc9 [/bin/sh -c set -e
+mc ls -r minio/raw/rh/salaries/
+COUNT=$(mc ls -r minio/raw/rh/salaries/ | wc -l)
+if [ "$COUNT" -gt 0 ]; then
+  echo "SUCCÈS : $COUNT fichiers de données détectés."
+else
+  echo "ERREUR : Aucun fichier."
+  exit 1
+fi]
+2026-03-19T12:28:47.388558Z INFO [2026-03-14 14:49:32 UTC]   714B STANDARD part-00000-0e36b1e6-d316-4b6a-9eb9-2bd675f84901-c000.snappy.parquet
+2026-03-19T12:28:47.388326Z INFO [2026-03-14 14:30:30 UTC]   219B STANDARD _spark_metadata/0
+2026-03-19T12:28:47.388479Z INFO [2026-03-14 14:49:32 UTC]   218B STANDARD _spark_metadata/1
+2026-03-19T12:28:47.388630Z INFO [2026-03-14 14:30:30 UTC] 1.6KiB STANDARD part-00000-8872183a-c17b-45c7-8894-3158f2f76bd3-c000.snappy.parquet
+2026-03-19T12:28:47.443918Z INFO SUCCÈS : 4 fichiers de données détectés.
+2026-03-19T12:28:47.639167Z DEBUG Command succeed with exit code 0
+2026-03-19T12:28:47.709504Z TRACE Container deleted: c5cbcdfe29f66331f5c34f21ab145139e1ed0f0ee2ce8cfbec390b1b6e8fafc9
+2026-03-19T12:28:47.713353Z TRACE Volume deleted: ce28eb583e4f1577114d2b99766b3c309b3c7caf7e96189bf52ec420445d0e77
+2026-03-19T12:28:47.714333Z TRACE Captured 0 output file(s).

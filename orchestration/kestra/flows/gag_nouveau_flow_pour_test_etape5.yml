@@ -1,0 +1,243 @@
+# Didier : je ne sais pas ce que je fais exactement
+- Contrainte : dis moi ce qui te manque pour répondre à ma demande
+
+- Contexte :
+
+
+- Que penses tu de cette assertion : 
+
+A) docker-compose-generator.yml créé deux images nommées poc-generator-history et 
+
+poc-generator-live
+
+B) docker-compose-streaming.yml créé une image nommée poc-spark-streaming
+
+C) il faut que je down les trois conteneurs que je viens de lancer
+
+D) j'ai fais une bétise en générant à nouveau l'historique de 365 jours
+
+E) il faut que je modifie le code que tu m'as proposé précédemment de la façon suivante :
+
+ id: p12_step1_complet
+
+namespace: poc.didier
+
+
+description: |
+
+  Orchestration complète :
+
+  - Kestra recrée les fichiers YAML "à la volée"
+
+  - Utilise les images déjà buildées sur la machine
+
+  - Pilote Docker via le socket du serveur Kestra
+
+
+tasks:
+
+  - id: setup_minio_bucket
+
+    type: io.kestra.plugin.scripts.shell.Commands
+
+    containerImage: minio/mc
+
+    taskRunner:
+
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+
+      networkMode: poc_network
+
+    env:
+
+      MC_HOST_minio: "http://admin:password@minio:9000"
+
+    commands:
+
+      - mc mb --ignore-existing minio/raw
+
+
+  - id: start_stacks
+
+    type: io.kestra.plugin.scripts.shell.Commands
+
+    containerImage: docker:cli
+
+    # Ici, on ne définit PAS de taskRunner pour utiliser le Docker du serveur Kestra
+
+    # qui a déjà accès au socket /var/run/docker.sock
+
+    commands:
+
+      # 1. Création du fichier Streaming
+
+      - |
+
+        cat <<EOF > docker-compose-streaming.yml
+
+        services:
+
+          redpanda:
+
+            image: docker.redpanda.com/redpandadata/redpanda:latest
+
+            container_name: redpanda
+
+            networks: [poc_network]
+
+            command: ["redpanda", "start", "--smp", "1", "--memory", "1G", "--overprovisioned", "--node-id", "0", "--check=false", "--kafka-addr", "internal://0.0.0.0:9092,external://0.0.0.0:19092", "--advertise-kafka-addr", "internal://redpanda:9092,external://localhost:19092"]
+
+          redpanda-console:
+
+            image: docker.redpanda.com/redpandadata/console:latest
+
+            container_name: redpanda_console
+
+            networks: [poc_network]
+
+            environment:
+
+              - KAFKA_BROKERS=redpanda:9092
+
+            ports: ["8080:8080"]
+
+        networks:
+
+          poc_network:
+
+            external: true
+
+        EOF
+
+
+      # 2. Création du fichier Ingestion (On utilise l'image buildée)
+
+      - |
+
+        cat <<EOF > docker-compose-ingestion.yml
+
+        services:
+
+          spark-streaming:
+
+            image: poc-spark-streaming # <--- Vérifie le nom de ton image buildée
+
+            container_name: spark_streaming_ingestion # <----- je ne suis pas sûr de ma proposition
+
+            networks: [poc_network]
+
+            environment:
+
+              - MINIO_ENDPOINT=http://minio:9000
+
+              - MINIO_ACCESS_KEY=admin
+
+              - MINIO_SECRET_KEY=password
+
+              - REDPANDA_BROKERS=redpanda:9092
+
+            command: /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/stream_to_minio.py
+
+        networks:
+
+          poc_network:
+
+            external: true
+
+        EOF
+
+
+      # 3. Lancement
+
+      - docker compose -f docker-compose-streaming.yml up -d
+
+      - docker compose -f docker-compose-ingestion.yml up -d
+
+
+  - id: start_generator
+
+    type: io.kestra.plugin.scripts.shell.Commands
+
+    containerImage: docker:cli
+
+    commands:
+
+      - |
+
+        cat <<EOF > docker-compose-generator.yml
+
+        services:
+
+          generator-live:
+
+            image: poc-generator-live # <--- Vérifie le nom de ton image buildée
+
+            container_name: generator_live
+
+            networks: [poc_network]
+
+            restart: always
+
+            environment:
+
+              - GEN_MODE=LIVE
+
+              - REDPANDA_BROKERS=redpanda:9092
+
+        networks:
+
+          poc_network:
+
+            external: true
+
+        EOF
+
+      - docker compose -f docker-compose-generator.yml up -d generator-live
+
+
+  - id: wait_for_ingestion
+
+    type: io.kestra.plugin.scripts.shell.Commands
+
+    commands:
+
+      - sleep 45 
+
+
+  - id: validate_parquet_files
+
+    type: io.kestra.plugin.scripts.shell.Commands
+
+    containerImage: minio/mc
+
+    taskRunner:
+
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+
+      networkMode: poc_network
+
+    env:
+
+      MC_HOST_minio: "http://admin:password@minio:9000"
+
+    commands:
+
+      - echo "Vérification des fichiers Parquet..."
+
+      - mc ls -r minio/raw/rh/salaries/
+
+      - |
+
+        COUNT=$(mc ls -r minio/raw/rh/salaries/ | wc -l)
+
+        if [ "$COUNT" -gt 0 ]; then
+
+          echo "SUCCÈS : $COUNT fichiers détectés."
+
+        else
+
+          echo "ERREUR : Aucun fichier."
+
+          exit 1
+
+        fi
