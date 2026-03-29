@@ -1,0 +1,17 @@
+{
+  "type": "record",
+  "name": "SportActivity",
+  "namespace": "com.poc.sport",
+  "fields": [
+    {"name": "id_salarie", "type": "int"},
+    {"name": "nom", "type": "string"},
+    {"name": "prenom", "type": "string"},
+    {"name": "adresse", "type": ["null", "string"], "default": null},
+    {"name": "date_activite", "type": "string"}, 
+    {"name": "type_sport", "type": "string"},
+    {"name": "distance_m", "type": "int"},
+    {"name": "duree_s", "type": "int"},
+    {"name": "calories", "type": "int"},
+    {"name": "commentaire", "type": ["null", "string"], "default": null}
+  ]
+}
