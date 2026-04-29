@@ -1,0 +1,36 @@
+# fichier poc/orchestration/kestra/flows/step1a_register_cdc.yaml
+# Flux Kestra Step 1a : Enregistrer le connecteur Debezium pour Postgres (Mode LIVE et CDC)
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+# de l'étape2 : Génération et Ingestion sans Soda avec Debezium allumé
+#
+# Didier : Ce flow est conçu pour tourner APRÈS Step0X et avoir allumé Debezium.
+
+id: p12_step1a_register_cdc
+namespace: poc.didier
+description: "Enregistrement du connecteur Debezium pour Postgres (CDC)"
+
+tasks:
+  - id: register_cdc_postgres
+    type: io.kestra.plugin.scripts.shell.Commands 
+    description: "Envoie du fichier register_postgres.json vers Kafka Connect en gérant l'idempotence"
+    containerImage: curlimages/curl
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /home/dev/projects/p12/poc/cdc:/app/cdc
+    commands:
+      - |
+        echo "Vérification de l'existence du connecteur postgres-connector..."
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://debezium:8083/connectors/postgres-connector)
+        
+        if [ "$STATUS" -eq 200 ]; then
+          echo "✅ Le connecteur postgres-connector existe déjà. On passe à la suite."
+        else
+          echo "🚀 Création du connecteur Debezium..."
+          curl -i -X POST http://debezium:8083/connectors \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d @/app/cdc/register_postgres.json
+          echo -e "\n✅ Connecteur enregistré avec succès."
+        fi

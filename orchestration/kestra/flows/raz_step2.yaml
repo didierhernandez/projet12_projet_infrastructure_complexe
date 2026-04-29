@@ -1,0 +1,73 @@
+# Fichier : poc/kestra/flows/raz_step2.yaml
+# Ce flow a pour fonction de permettre de relancer step2 pour repartir de la situation suite à 
+#step0bis puis step0 puis step1. À copier/coller dans Kestra.
+# 
+# Didier : Ce fichier fait partie de la Phase 3 - Step 2 (Batch DWH)
+# Didier : Cette version "Full Refresh" est adaptée pour calculer le Live Uniquement
+#          à la volée et facilement changer les règles métiers (ex: prime à 7%).
+#
+# Didier : Attention : il manque peut-être la gestion dans Minio du fichier placeholder.txt
+# Didier : Attention : il manque peut-être la gestion du dossier des Metadonnées de MinIO live/
+# Didier : Attention : il manque peut-être la gestion des tables temp_X de calculs temporaires de step2
+
+# Fichier : poc/kestra/flows/raz_step2.yaml
+# Ce flow a pour fonction de permettre de relancer step2 pour repartir de la situation suite à 
+# step0bis puis step0 puis step1. À copier/coller dans Kestra.
+# 
+# Didier : Ce fichier fait partie de la Phase 3 - Step 2 (Batch DWH)
+# Didier : Cette version "Full Refresh" est adaptée pour calculer le Live Uniquement
+#          à la volée et facilement changer les règles métiers (ex: prime à 7%).
+#
+# Didier : RESOLU - Gestion du fichier placeholder.txt pour maintenir l'arborescence MinIO
+# Didier : RESOLU - Nettoyage des tables temporaires (temp_primes, temp_be, temp_ref) pour éviter les crashs au run suivant
+# Didier : RESOLU - Suppression des métadonnées Spark (_spark_metadata) pour forcer le re-traitement des fichiers
+
+id: p12_dev_reset_step2
+namespace: poc.didier
+description: "RESET FLASH : Nettoyage intégral pour itération Step 2"
+
+tasks:
+  - id: reset_postgres_tables
+    type: io.kestra.plugin.jdbc.postgresql.Queries # Correction : Alignement de l'indentation ici
+    url: jdbc:postgresql://postgres:5432/rh_db
+    username: didier
+    password: mon_password_secu
+    sql: |
+      -- 1. Nettoyage des tables de faits pour repartir à zéro
+      TRUNCATE TABLE dwh.fct_primes_transport;
+      TRUNCATE TABLE dwh.fct_bien_etre_eligibilite;
+      
+      -- 2. Sécurité : Suppression des tables temporaires si le run précédent a crashé
+      -- Cela évite l'erreur "relation already exists" dans le job Spark.
+      DROP TABLE IF EXISTS dwh.temp_primes;
+      DROP TABLE IF EXISTS dwh.temp_be;
+      DROP TABLE IF EXISTS public.temp_ref;
+
+  - id: restore_minio_files
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Restauration des données et nettoyage des métadonnées Spark"
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    containerImage: minio/mc
+    env:
+      # Didier : Attention, admin:password doit être raccord avec ton installation MinIO
+      MC_HOST_minio: "http://admin:password@minio:9000" 
+    commands:
+      - echo "1. Nettoyage des métadonnées Spark dans live (indispensable pour ré-ingérer)"
+      - mc rm --recursive --force minio/raw/rh/salaries/live/_spark_metadata/ || true
+      - mc rm minio/raw/rh/salaries/live/_SUCCESS || true
+      
+      - echo "2. Restauration des fichiers archivés vers le dossier live..."
+      - mc mv --recursive minio/raw/rh/salaries/archive/ minio/raw/rh/salaries/live/ || true
+      
+      #- echo "3. Gestion des placeholders pour maintenir l'arborescence MinIO"
+      #- mc touch minio/raw/rh/salaries/archive/placeholder.txt
+      #- mc touch minio/raw/rh/salaries/live/placeholder.txt
+      
+      - echo "4. Vérification du contenu du dossier live :"
+      - mc ls minio/raw/rh/salaries/live/
+
+  - id: log_success
+    type: io.kestra.core.tasks.log.Log
+    message: "Reset terminé. Métadonnées purgées, tables temporaires supprimées et fichiers restaurés. Prêt pour Step 2."

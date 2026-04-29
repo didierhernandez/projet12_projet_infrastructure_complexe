@@ -1,0 +1,45 @@
+# Secrets / config locale
+.env
+*.env
+.env.*
+
+# Python & Tests
+__pycache__/
+*.pyc
+.pyo
+.pyd
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.coverage
+
+# OS
+.DS_Store
+Thumbs.db
+
+# --- SPÉCIFIQUE DATA P12 ---
+# Ne pas sauvegarder les données générées ni l'état du flux
+# spark/checkpoints/**/*
+# storage/minio_data/**/*
+# storage/pgadmin_data/**/*
+# storage/postgres_data/**/*
+# storage/redpanda_data/**/*
+storage/
+
+# On garde les dossiers mais on ignore le contenu
+#!spark/checkpoints/.gitkeep
+#!storage/minio_data/.gitkeep
+#!storage/pgadmin_data/.gitkeep
+#!storage/postgres_data/.gitkeep
+#!storage/redpanda_data/.gitkeep
+
+# Ignorer les fichiers générés par Kestra à la volée
+docker-compose-all.yml
+
+# Historique (si ce sont des dumps de données)
+#historique/orchestration/kestra/database/
+spark/checkpoints_live/
+spark/libs/
+orchestration/kestra/database/
+cdc/libs/

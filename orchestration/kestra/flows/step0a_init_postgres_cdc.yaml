@@ -1,0 +1,55 @@
+# Fichier : poc/kestra/flows/step0a_init_postgres_cdc.yaml
+# Didier : ATTENTION : c'est pas clair. Ce code doit peut être évoluer s'il doit être utilisé
+
+# Didier : Debezium est éteint
+# Didier : Ce flow est la première partie issue de la séparation de l'ancien step0bis.
+# Il a pour unique but de créer le schéma strict dans Postgres, charger le CSV (Amnésique) pour le peuplement initial 
+# de la table ref_salaries et configurer le connecteur Debezium (CDC) via Kafka Connect.
+# Didier : Ce flow est la seconde partie issue de la séparation :
+#lancer step0a puis step0_ingestion_minio en premier, puis les step0bis ...
+# Didier : Ce fichier fait partie de la Phase 3 - Step0X (Initial Load DWH)
+# Didier : pour l'instant les mots de passes sont en clairs et non centralisés : dette technique
+# Didier : dans cette version, pas de gestion du cdc
+
+id: p12_step0a_init_postgres_cdc
+namespace: poc.didier
+description: "Phase 1 - Initialisation Master : Application du schéma strict et activation du CDC"
+
+tasks:
+  - id: load_strict_reference_data
+    type: io.kestra.plugin.scripts.shell.Commands 
+    description: "Création avec un code de modification sql (DDL DWH) et chargement initial du référentiel"
+    containerImage: python:3.11-slim
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc:/app
+    commands:
+      # installation à la volée car l'image python:3.11-slim est vierge
+      - pip install pandas sqlalchemy psycopg2-binary requests > /dev/null
+      - python /app/scripts/load_ref_salaries.py
+
+# Didier : Tâche mise en commentaire pour l'instant car Debezium n'est pas allumé durant les Step0X
+#  - id: register_cdc_postgres
+#    type: io.kestra.plugin.scripts.shell.Commands 
+#    description: "Envoie du fichier register_postgres.json vers Kafka Connect en gérant l'idempotence"
+#    containerImage: curlimages/curl
+#    taskRunner:
+#      type: io.kestra.plugin.scripts.runner.docker.Docker
+#      networkMode: poc_network
+#      volumes:
+#        - /home/dev/projects/p12/poc/cdc:/app/cdc
+#    commands:
+#      - |
+#        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://debezium:8083/connectors/postgres-connector)
+#        if [ "$STATUS" -eq 200 ]; then
+#          echo "Le connecteur postgres-connector existe déjà. On passe à la suite."
+#        else
+#          echo "Création du connecteur Debezium..."
+#          curl -i -X POST http://debezium:8083/connectors \
+#            -H "Content-Type: application/json" \
+#            -H "Accept: application/json" \
+#            -d @/app/cdc/register_postgres.json
+#        fi

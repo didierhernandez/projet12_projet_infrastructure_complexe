@@ -1,0 +1,71 @@
+# Ce fichier docker-compose-cdc.yml est maintenu à la racine /poc/
+# Il représente l'Étape 6 : Stack "Connect" (Capture de Données Changées - CDC)
+# Lancement de Debezium uniquement après que la stack Storage soit prête.
+
+# Didier : Intérêt validé. Ce fichier est indispensable pour isoler la capture 
+#des données sources sans surcharger la stack de stockage ou de streaming.
+# Didier : à vérifier : Lancement à effectuer uniquement après 'storage' et 'streaming'.
+# Didier : Modification pour passer à nouveau à Avro et plus à JSON Converter pour compatibilité avec mon choix dans Spark.
+#Étape 6 : Stack "Connect" (CDC) - Retour au format AVRO
+
+services:
+  debezium:
+    # Didier : Modification pour utiliser le Dockerfile local et "enfermer" les JARs
+    build:
+      context: ./cdc
+      dockerfile: Dockerfile
+    container_name: debezium
+    networks:
+      - poc_network
+    env_file:
+      - .env
+    environment:
+      # --- Configuration du Cluster Connect ---
+      - BOOTSTRAP_SERVERS=${REDPANDA_BROKERS}
+      - GROUP_ID=1
+      - CONFIG_STORAGE_TOPIC=my_connect_configs
+      - OFFSET_STORAGE_TOPIC=my_connect_offsets
+      - STATUS_STORAGE_TOPIC=my_connect_statuses
+      
+      # --- Configuration des Converters (AVRO) ---
+      # Didier : Correction des classes Java pour l'AvroConverter de Confluent
+      - CONNECT_KEY_CONVERTER=io.confluent.connect.avro.AvroConverter
+      - CONNECT_VALUE_CONVERTER=io.confluent.connect.avro.AvroConverter
+      
+      # URL du Schema Registry (Indispensable pour Avro)
+      # On utilise la variable définie dans ton .env (ex: http://redpanda:8081)
+      - CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL}
+      - CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL}
+      
+      # Pour Avro, ces paramètres ne sont pas utilisés comme en JSON, 
+      # mais on les laisse par sécurité ou on les supprime.
+      - CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE=true
+      - CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE=true
+      
+      # --- Sécurité et Interne ---
+      - CONNECT_REST_ADVERTISED_HOST_NAME=debezium
+    ports:
+      - "8083:8083"
+      
+    # Didier : Ajout de limites strictes sur les logs Docker pour éviter la saturation du disque
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    
+    # Didier : Configuration du montage (Volume) pour lier le dossier local 
+    # au chemin interne de scan des plugins (Kafka Connect)
+    volumes:
+      - ./cdc/libs/avro-converter:/kafka/connect/avro-converter
+      # Didier : On mappe le dossier interne de Debezium vers notre storage pour bloquer 
+      # la création de volumes anonymes géants (Correction du bug des 13 Go)
+      - ./storage/cdc_data:/kafka/data
+      
+    external_links:
+      - redpanda
+      - postgres
+
+networks:
+  poc_network:
+    external: true

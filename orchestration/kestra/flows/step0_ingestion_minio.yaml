@@ -1,0 +1,95 @@
+# fichier step0_ingestion_minio.yaml dans poc/kestra/flows
+# Flux Kestra Step 0 : Création du Bucket et Validation
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+# de l'étape 2 : Génération et Ingestion sans Soda et sans Debezium allumé
+# Workflow Kestra pour la création du fichier d'historique d'évènements sportifs bruts dans MinIO
+# Didier : Cette étape est le préalable indispensable aux stratégies d'Upsert/Truncate du DWH.
+#Elle isole l'historique dans s3a://raw/rh/salaries/historique/
+
+# Didier : Ce flow est la seconde partie issue de la séparation :
+#lancer step0a puis step0_ingestion_minio puis les step0bis ...
+# Didier : Ce fichier fait partie de la Phase 3 - Step0X (Initial Load DWH)
+# Didier : dans cette version, l'historique (les step0X) est indépendant du live (step1) 
+#et les fichiers sont nettoyés indépendamment à chaque lancement de ce flow
+#donc, dans une version plus proche de la production, il faudra utiliser des outils de type Delta Lake et Apache Iceberg
+# Didier : à vérifier : Ajout d'une étape de build pour le générateur et spark suite à la mise en cohérence des noms des images utilisées, 
+# et mise à jour du docker run pour utiliser le nom d'image verrouillée
+# Ce flow automatise désormais la création de l'image Docker pour éviter les versions obsolètes.
+# Didier - Attention : dans cette version il y a un chemin en dur de mon pc : il faudra le changer pour le readme :
+#-v /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs \
+# Didier : à vérifier : ce flow utilise poc-generator pour l'historique.
+# Didier : dans cette version les fichier jar de spark sont tous utilisés en local car prétéléchargés
+# Didier : à vérifier que ce n'est plus vrai : dans cette version, le topic est créé en dehors du Kestra à la main à chaque reset du test : 
+#docker exec -it redpanda rpk topic create cdc.public.ref_salaries
+#il faudra l'intégrer pour l'automatiser : dette technique qui n'est peut être plus là
+
+id: p12_step0_history_minio
+namespace: poc.didier
+description: "Phase 2 - Étape A : Génération du passé et archivage MinIO"
+
+tasks:
+  - id: cleanup_minio
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Nettoyage du dossier historique dans MinIO"
+    containerImage: minio/mc
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      MC_HOST_minio: "http://admin:password@minio:9000"
+    commands:
+      - mc mb --ignore-existing minio/raw
+      - mc rm --recursive --force minio/raw/rh/salaries/historique/ || true
+
+  - id: purge_kafka_topic
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Purge du topic Kafka pour repartir à zéro (Scorched Earth)"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    commands:
+      # Didier : On utilise docker exec sur le conteneur redpanda existant
+      # On ne met pas -it car Kestra n'est pas un terminal interactif
+      - docker exec redpanda rpk topic delete cdc.public.ref_salaries || true
+      - docker exec redpanda rpk topic create cdc.public.ref_salaries
+
+  - id: inject_kafka_history
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Génération des données historiques dans Kafka (Redpanda)"
+    # Didier : Correction Erreur 127 - On décommente l'image docker:cli
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      # Didier : Correction Erreur 127 - On décommente le socket pour parler au démon Docker de l'hôte
+      volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+      networkMode: poc_network
+    commands:
+      - |
+        docker run --rm --name generator_history \
+          --network poc_network \
+          -e GEN_MODE=HISTORY \
+          -e REDPANDA_BROKERS="redpanda:9092" \
+          -e SCHEMA_REGISTRY_URL="http://redpanda:8081" \
+          poc-generator:latest
+
+  - id: run_spark_batch_minio
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Spark capture le passé et crée le Parquet de 115ko"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    commands:
+      - |
+        docker run --rm --name spark_history_batch \
+          --network poc_network \
+          -v /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs \
+          -e SPARK_MODE="BATCH" \
+          -e MINIO_ENDPOINT="http://minio:9000" \
+          -e AWS_ACCESS_KEY_ID="admin" \
+          -e AWS_SECRET_ACCESS_KEY="password" \
+          poc-spark-streaming:latest \
+          /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/stream_to_minio.py

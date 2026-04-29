@@ -1,0 +1,40 @@
+# Ce fichier docker-compose-generator.yml à la racine du dossier poc/
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+# de l'étape 2 : Génération et Ingestion avec Soda
+# Il démarre, injecte les données, s'arrête tout seul une fois sa mission terminée.
+
+# Didier : Fichier déplacé à la racine pour une gestion centralisée.
+# Didier : Le contexte de build est maintenant dirigé vers le sous-dossier ./generator
+# Didier : Utilise le script unifié generate_data.py avec les variables du .env
+# Didier : Suppression des 'depends_on' car Redpanda est géré dans une autre stack (Streaming). 
+# Didier : Fixation du nom de l'image (poc-generator) pour clarifier l'orchestration Kestra.
+
+services:
+  generator-history:
+    build: ./generator
+    image: poc-generator:latest
+    container_name: generator_history
+    networks:
+      - poc_network
+    env_file:
+      - .env 
+    environment:
+      - GEN_MODE=HISTORY
+    command: python scripts/generate_data.py
+
+  generator-live:
+    build: ./generator
+    image: poc-generator:latest
+    container_name: generator_live
+    networks:
+      - poc_network
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - GEN_MODE=LIVE
+    command: python scripts/generate_data.py
+
+networks:
+  poc_network:
+    external: true # Réseau partagé avec Redpanda et la stack Storage

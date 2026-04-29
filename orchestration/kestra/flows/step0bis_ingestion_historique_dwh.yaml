@@ -1,0 +1,44 @@
+# Fichier : poc/kestra/flows/step0bis_ingestion_historique_dwh.yaml
+# Didier : ATTENTION : c'est pas clair. Ce code doit peut-être évoluer s'il doit être utilisé
+
+# Didier : Ce flow est la seconde partie issue de la séparation :
+#lancer step0a puis step0_ingestion_minio puis les step0bis ...
+# Il ne lance QUE le calcul de l'historique vers le DWH et met à jour la table ref_salairies.
+# Didier : Ce fichier fait partie de la Phase 3 - Step0X (Initial Load DWH)
+# Didier : # Suppression de l'étape init_postgres_ref car déjà gérée dans le Step0a (évite les truncate inutiles).
+
+id: p12_step0bis_history_dwh
+namespace: poc.didier
+description: "Phase 3 - Étape B : Calcul Spark de l'historique vers le DWH"
+
+tasks:
+  - id: run_spark_history_to_dwh
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Calcul DWH : Jointure MinIO + Postgres Ref avec logique d'Upsert/Truncate"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    commands:
+      - |
+        docker run --rm --name spark_history_dwh \
+          --network poc_network \
+          -v /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs \
+          -e MINIO_ENDPOINT="http://minio:9000" \
+          -e AWS_ACCESS_KEY_ID="admin" \
+          -e AWS_SECRET_ACCESS_KEY="password" \
+          poc-spark-streaming:latest \
+          /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/historique_to_dwh.py
+
+  - id: check_results
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Vérification Didier : Nombre de lignes insérées dans le DWH"
+    containerImage: postgres:15-alpine
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+    env:
+      PGPASSWORD: "mon_password_secu"
+    commands:
+      - psql -h postgres -U didier -d rh_db -c "SELECT 'Primes' as table, count(*) FROM dwh.fct_primes_transport UNION SELECT 'Eligibilité', count(*) FROM dwh.fct_bien_etre_eligibilite;"

@@ -1,0 +1,12 @@
+# Ignorer les données de stockage (cause de l'erreur de permission)
+storage/
+checkpoint/
+checkpoints/
+
+# Ignorer les environnements virtuels et le cache
+.venv/
+__pycache__/
+*.pyc
+
+# Ignorer les dossiers de config orchestrateur
+.kestra/

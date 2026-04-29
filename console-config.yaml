@@ -1,0 +1,15 @@
+# fichier console-config.yaml à la racine du projet
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+# de l'étape 2 : Génération et Ingestion sans Soda pour l'instant
+# Ce fichier de configuration pour court-circuiter les variables d'environnement en passant par un fichier de configuration direct 
+#de la console Panda. Ce qui lui permet de désérialiser proprement les messages que le fichier generate_data.py envoie. 
+#Sans cette configuration propre, tu ne verrais que des caractères illisibles (binaire) dans l'interface 
+#au lieu de voir tes colonnes id_salarie, type_sport, etc.
+
+kafka:
+  brokers: ["redpanda:9092"]
+
+# Ce bloc doit être à la racine du YAML, pas décalé sous kafka
+schemaRegistry:
+  enabled: true
+  urls: ["http://redpanda:8081"]

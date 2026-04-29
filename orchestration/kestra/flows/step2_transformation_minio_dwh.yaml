@@ -1,0 +1,84 @@
+# Fichier : poc/kestra/flows/step2_transformation_minio_dwh.yaml
+# Ce flow lance Spark avec les paramètres métiers. À copier/coller dans Kestra.
+# 
+# Didier : Ce fichier fait partie de la Phase 3 - Step 2 (Batch DWH)
+# Didier : Cette version "Full Refresh" est adaptée pour recalculer tout l'historique (Live Uniquement)
+#          à la volée et facilement changer les règles métiers (ex: prime à 7%).
+# Didier : Attention : vérifier le contrat de données y compris en termes de types de données
+# Didier : mise à jour de l'endroit où ce script pioche dans Minio : les raws de live
+# Didier : mots de passe en durs : dette technique
+# Didier : Attention : ajout de l'url Slack : je ne sais pas si c'est utile
+# ÉVOLUTIONS MAJEURES : 
+# a) Les paramètres métiers sont gérés par Kestra (inputs). 
+# Ils sont injectés comme variables d'environnement dans le container Spark.
+# Tu n'as donc PLUS BESOIN de modifier le fichier Python 'batch_dwh_postgres.py' 
+# si la direction décide de changer le seuil d'activités ou le taux de prime !
+# b) Ajout d'une tâche préliminaire pour compiler automatiquement 
+# l'image Docker Spark DWH Batch. Plus besoin de le faire à la main !
+
+id: p12_step2_batch_dwh_full
+namespace: poc.didier
+description: "Recalcul complet de l'historique DWH Postgres pour Metabase (Live Uniquement)"
+
+inputs:
+  - id: param_taux_prime
+    type: STRING
+    defaults: "0.05"
+    description: "Pourcentage de la prime sportive (ex: 0.05 pour 5%)"
+  - id: param_seuil_activites
+    type: STRING
+    defaults: "15"
+    description: "Seuil d'activités pour éligibilité bien-être"
+
+tasks:
+  - id: check_and_build_image
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Vérifie ou re-build l'image Spark Batch"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc:/app
+    commands:
+      - echo "Vérification et Build de l'image avec Slack poc-spark-dwh-batch..."
+      - docker build -t poc-spark-dwh-batch:latest /app/spark/
+
+  - id: run_spark_dwh_full
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Lancement du job Spark de calcul (Batch)"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc/.env:/opt/.env  # Monte le fichier .env dans le conteneur
+    commands:
+      - |
+        docker run --rm --name spark_batch_dwh \
+        --network poc_network \
+        -v /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs \
+        -v /home/dev/projects/p12/poc/spark/libs:/opt/spark/libs \
+        --env-file /opt/.env \  # Charge les variables depuis .env
+        -e PARAM_TAUX_PRIME="{{ inputs.param_taux_prime }}" \
+        -e PARAM_SEUIL_BIEN_ETRE="{{ inputs.param_seuil_activites }}" \
+        -e MINIO_ENDPOINT="http://minio:9000" \
+        -e AWS_ACCESS_KEY_ID="admin" \
+        -e AWS_SECRET_ACCESS_KEY="password" \
+        -e DB_HOST="postgres" \
+        -e DB_PORT="5432" \
+        -e DB_NAME="rh_db" \
+        -e DB_USER="didier" \
+        -e DB_PASSWORD="mon_password_secu" \
+        -e SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL}" \
+        poc-spark-dwh-batch:latest \
+        /opt/spark/bin/spark-submit \
+        --master local[*] \
+        --jars /opt/spark/libs/postgresql-42.6.0.jar,/opt/spark/libs/hadoop-aws-3.3.4.jar,/opt/spark/libs/aws-java-sdk-bundle-1.12.262.jar \
+        /opt/spark/jobs/batch_dwh_postgres.py
+
+  - id: final_log
+    type: io.kestra.core.tasks.log.Log
+    message: "Le job Spark Batch s'est terminé. Traitement du flux Live achevé."

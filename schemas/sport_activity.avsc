@@ -1,0 +1,29 @@
+{
+  "type": "record",
+  "name": "SalarieSport",
+  "namespace": "poc.didier",
+  "fields": [
+    {"name": "id_salarie", "type": "int"},
+    {"name": "nom", "type": "string"},
+    {"name": "prenom", "type": "string"},
+    {"name": "date_naissance", "type": ["null", "string"], "default": null},
+    {"name": "bu", "type": ["null", "string"], "default": null},
+    {"name": "date_embauche", "type": ["null", "string"], "default": null},
+    {"name": "salaire_brut", "type": "float"},
+    {"name": "type_contrat", "type": ["null", "string"], "default": null},
+    {"name": "jours_cp", "type": ["null", "int"], "default": null},
+    {"name": "adresse_domicile", "type": ["null", "string"], "default": null},
+    {"name": "moyen_de_deplacement", "type": "string"},
+    {"name": "date_activite", "type": ["null", "string"], "default": null},
+    {"name": "type_sport", "type": ["null", "string"], "default": null},
+    {"name": "distance_m", "type": ["null", "int"], "default": null},
+    {"name": "duree_s", "type": ["null", "int"], "default": null},
+    {"name": "calories", "type": ["null", "int"], "default": null},
+    {"name": "commentaire", "type": ["null", "string"], "default": null},
+    {"name": "latitude", "type": ["null", "double"], "default": null},
+    {"name": "longitude", "type": ["null", "double"], "default": null},
+    {"name": "distance_km", "type": ["null", "double"], "default": null},
+    {"name": "date_geocodage", "type": ["null", "string"], "default": null},
+    {"name": "evolution_conges", "type": ["null", "int"], "default": null, "doc": "Colonne vide pour évolution future"}
+  ]
+}
