@@ -5,7 +5,7 @@
 #lancer step0a puis step0_ingestion_minio puis les step0bis ...
 # Il ne lance QUE le calcul de l'historique vers le DWH et met à jour la table ref_salairies.
 # Didier : Ce fichier fait partie de la Phase 3 - Step0X (Initial Load DWH)
-# Didier : # Suppression de l'étape init_postgres_ref car déjà gérée dans le Step0a (évite les truncate inutiles).
+# Didier : Suppression de l'étape init_postgres_ref car déjà gérée dans le Step0a (évite les truncate inutiles).
 
 id: p12_step0bis_history_dwh
 namespace: poc.didier

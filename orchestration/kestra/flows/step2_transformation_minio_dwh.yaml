@@ -54,14 +54,16 @@ tasks:
       networkMode: poc_network
       volumes:
         - /var/run/docker.sock:/var/run/docker.sock
-        - /home/dev/projects/p12/poc/.env:/opt/.env  # Monte le fichier .env dans le conteneur
+        # Didier : On monte le .env de l'hôte vers le conteneur docker:cli pour que --env-file le trouve
+        - /home/dev/projects/p12/poc/.env:/opt/.env
     commands:
       - |
+        # Plus besoin d'export manuel de .env, on laisse docker run lire le fichier .env directement
         docker run --rm --name spark_batch_dwh \
         --network poc_network \
         -v /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs \
         -v /home/dev/projects/p12/poc/spark/libs:/opt/spark/libs \
-        --env-file /opt/.env \  # Charge les variables depuis .env
+        --env-file /opt/.env \
         -e PARAM_TAUX_PRIME="{{ inputs.param_taux_prime }}" \
         -e PARAM_SEUIL_BIEN_ETRE="{{ inputs.param_seuil_activites }}" \
         -e MINIO_ENDPOINT="http://minio:9000" \
@@ -72,7 +74,6 @@ tasks:
         -e DB_NAME="rh_db" \
         -e DB_USER="didier" \
         -e DB_PASSWORD="mon_password_secu" \
-        -e SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL}" \
         poc-spark-dwh-batch:latest \
         /opt/spark/bin/spark-submit \
         --master local[*] \

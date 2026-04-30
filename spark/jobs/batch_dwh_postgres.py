@@ -16,6 +16,9 @@
 #il y a des incohérences dans les calculs : public.temp_primes ?? temp_be ?? temp_ref ??
 # Didier : à faire : utiliser les fichiers de live dans MinIO pour envoyer des messages Slack
 # Didier : à faire : appliquer les valeurs de géolocalisation et de logique Haversine
+# Didier : attention : Le choix du .collect() : * Côté positif : Pour un POC de quelques centaines de lignes, 
+#c'est la méthode la plus simple et la plus directe pour sortir des données de Spark et utiliser la bibliothèque requests.
+#Point d'attention : C'est une opération qui ramène tout sur le "Driver". Si ton dossier live/ contenait 1 million de lignes, ton script planterait (Out of Memory) : dette technique
 
 import os
 import math
