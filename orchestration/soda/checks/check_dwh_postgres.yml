@@ -1,0 +1,20 @@
+# Didier : Audit Qualité DWH
+# On garde ref_salaries dans public car elle y est
+checks for public.ref_salaries:
+  - min(distance_km) >= 0:
+      name: Distance positive
+  - min(latitude) >= 40:
+      name: Latitude Min France
+  - max(latitude) <= 52:
+      name: Latitude Max France
+  - min(longitude) >= -5:
+      name: Longitude Min France
+  - max(longitude) <= 10:
+      name: Longitude Max France
+
+# On précise le schéma dwh pour la table des faits
+checks for dwh.fct_primes_transport:
+  - min(montant_prime) >= 0:
+      name: Prime positive
+  - max(montant_prime) <= 500:
+      name: Seuil alerte prime

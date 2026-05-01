@@ -1,0 +1,116 @@
+# Fichier : poc/kestra/flows/step3_quality_audit.yaml
+# Ce flow orchestre maintenant : Nettoyage Quarantaine -> Soda -> Alerte Slack groupée après Step2
+# Ce flow 100% indépendant de Step2, pourra être lancé à la main après le Step 2
+# Didier : ce flow utilise l'image soda-agent:latest qui a été construite une fois
+# Didier : dans cette version cela n'a pas fonctionné : la variable secrète de l'url de slack est configurée 
+#pour être utilisée dans Step3 via .env, ce qui a fonctionné c'est de passer par du python comme dans step2
+
+id: step3_quality_audit
+namespace: dev
+description: "Audit Qualité : Scan Soda + Remplissage Quarantaine + Alerte Slack"
+
+tasks:
+  - id: clean_quarantine
+    type: io.kestra.plugin.jdbc.postgresql.Queries
+    url: "jdbc:postgresql://postgres:5432/rh_db"
+    username: "didier"
+    password: "mon_password_secu"  # À externaliser aussi plus tard
+    sql: |
+      CREATE TABLE IF NOT EXISTS public.soda_failed_rows (id_salarie INTEGER, check_name TEXT, value NUMERIC);
+      TRUNCATE TABLE public.soda_failed_rows;
+
+  - id: quality_check_soda
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Contrôle Qualité Soda sur le DWH Postgres"
+    containerImage: docker:cli
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: poc_network
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/dev/projects/p12/poc/orchestration/soda:/soda
+        - /home/dev/projects/p12/poc/.env:/opt/.env
+    commands:
+      - |
+        docker run --rm \
+        --network poc_network \
+        -v /home/dev/projects/p12/poc/orchestration/soda:/soda \
+        --env-file /opt/.env \
+        soda-agent:latest \
+        scan -d postgres_dwh -c /soda/configuration.yml /soda/checks/check_dwh_postgres.yml
+    allowFailure: true
+
+  - id: populate_quarantine
+    type: io.kestra.plugin.jdbc.postgresql.Queries
+    description: "Remplissage manuel de la table de quarantaine"
+    url: "jdbc:postgresql://postgres:5432/rh_db"
+    username: "didier"
+    password: "mon_password_secu"  # À externaliser aussi plus tard
+    sql: |
+      INSERT INTO public.soda_failed_rows (id_salarie, check_name, value)
+      SELECT id_salarie, 'Distance Hors Bornes', distance_km
+      FROM public.ref_salaries
+      WHERE distance_km < 0 OR distance_km > 500;
+
+      INSERT INTO public.soda_failed_rows (id_salarie, check_name, value)
+      SELECT id_salarie, 'Prime Hors Bornes', montant_prime
+      FROM dwh.fct_primes_transport
+      WHERE montant_prime < 0 OR montant_prime > 500;
+
+  - id: get_failed_employees
+    type: io.kestra.plugin.jdbc.postgresql.Query
+    url: "jdbc:postgresql://postgres:5432/rh_db"
+    username: "didier"
+    password: "mon_password_secu"  # ⚠️ À externaliser
+    sql: |
+      SELECT DISTINCT s.nom, s.prenom
+      FROM public.ref_salaries s
+      INNER JOIN public.soda_failed_rows f ON s.id_salarie = f.id_salarie;
+    fetchType: FETCH
+
+  - id: send_slack_alert
+    type: io.kestra.plugin.scripts.python.Script
+    # DIDIER : C'est ce paramètre qui permet à Python de voir 
+    # les variables d'environnement du conteneur Docker.
+    runner: PROCESS 
+    beforeCommands:
+      - pip install requests > /dev/null 2>&1
+    # On ne met PAS de bloc 'env:' ici, pour ne pas écraser 
+    # la variable système par du texte brut.
+    script: |
+      import os
+      import json
+      import requests
+
+      # 1. On récupère la variable directement dans l'OS
+      slack_url = os.environ.get("SLACK_WEBHOOK_URL")
+
+      # 2. On récupère les anomalies générées par la tâche précédente
+      anomalies_json = """{{ outputs.get_failed_employees.rows | json }}"""
+      
+      if not slack_url or not slack_url.startswith("http"):
+          print(f"Erreur : URL Slack invalide ou manquante : {slack_url}")
+          exit(1)
+
+      records = json.loads(anomalies_json)
+      if not records:
+          print("Aucune anomalie. Fin.")
+          exit(0)
+
+      # 3. Logique de construction du message
+      noms = [f"{r.get('prenom', '')} {r.get('nom', '')}".strip() or "Collaborateur" for r in records]
+      liste_formatee = ", ".join(noms)
+      
+      payload = {
+          "text": f"⚠️ *Alerte Qualité* : {len(noms)} anomalies détectées : {liste_formatee}."
+      }
+
+      # 4. Envoi
+      try:
+          response = requests.post(slack_url, json=payload)
+          if response.status_code == 200:
+              print("Bravo Didier, le message Slack est parti !")
+          else:
+              print(f"Erreur Slack HTTP {response.status_code}: {response.text}")
+      except Exception as e:
+          print(f"Erreur d'envoi : {e}")

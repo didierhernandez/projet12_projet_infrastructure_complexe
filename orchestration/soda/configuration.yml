@@ -2,11 +2,30 @@
 # Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
 #de l'étape2 : Génération et Ingestion avec Soda
 # Connexion aux sources (MinIO/Postgres)
+# Didier : Ajout de la source Postgres pour les contrôles DWH (Phase 2)
+
+# Fichier configuration.yml  dans poc/soda
+# Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
+# de l'étape2 : Génération et Ingestion avec Soda
+# Connexion aux sources (MinIO/Postgres)
+# Didier : Ajout de la source Postgres pour les contrôles DWH (Phase 2)
+# Didier : Correction cruciale ici -> Soda exige "username" et non "user"
+
 
 # Connexion à ta zone brute (MinIO S3)
-data_source minio_raw:
-  type: s3
-  access_key_id: ${MINIO_ACCESS_KEY}
-  secret_access_key: ${MINIO_SECRET_KEY}
-  endpoint_url: ${MINIO_ENDPOINT}
-  region_name: ${MINIO_REGION}
+#data_source minio_raw:
+#  type: s3
+#  access_key_id: ${MINIO_ACCESS_KEY}
+#  secret_access_key: ${MINIO_SECRET_KEY}
+#  endpoint_url: ${MINIO_ENDPOINT}
+#  region_name: ${MINIO_REGION}
+
+# Didier : Ajout de la source Postgres pour les contrôles DWH de Soda (Phase 2)
+data_source postgres_dwh:
+  type: postgres
+  host: ${DB_HOST}
+  port: ${DB_PORT}
+  username: ${DB_USER}
+  password: ${DB_PASSWORD}
+  database: ${DB_NAME}
+  #schema: public

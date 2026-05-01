@@ -3,7 +3,9 @@
 # Gère l'orchestration (Kestra) et la qualité de la donnée (Soda)
 # Didier : à vérifier
 # Didier : L'autorisation de monter le socket est maintenant gérée proprement dans le bloc YAML pour éviter les conflits.
-# Didier : dans cette version il n'y a pas Soda : à faire plus tard
+# Didier : dans cette version il n'y a pas Soda : à faire plus tard peut-être
+# Didier : dans cette version cela n'a pas fonctionné : la variable secrète de l'url de slack est configurée 
+#pour être utilisée dans Step3 via .env, ce qui a fonctionné c'est de passer par du python comme dans step2
 
 services:
   kestra:
@@ -21,11 +23,22 @@ services:
     ports:
       - "8089:8080" # On utilise 8089 car Redpanda Console utilise déjà le 8080
     env_file:
-      - .env  # <--- Ajoute cette ligne ici pour charger tes variables
+      - .env  # Didier : ajout de cette ligne ici pour charger les variables secrètes
     environment:
       TZ: Europe/Paris
+      # 1. On dit à Kestra de chercher les secrets dans les variables d'environnement
+      #KESTRA_SECRETS_TYPE: ENVIRONMENT
+      # 2. On définit le secret.
+      # Le nom du secret sera ce qui suit le préfixe KESTRA_SECRETS_
+      # On garde l'injection de ton .env
+      #KESTRA_SECRETS_SLACK_URL: "${SLACK_WEBHOOK_URL}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
       KESTRA_CONFIGURATION: |
         kestra:
+          variables:
+            # DIDIER : C'est ici que l'on déverrouille l'accès
+            env-vars:
+              - SLACK_WEBHOOK_URL
           # --- C'EST ICI QUE TOUT CHANGE ---
           plugins:
             configurations:

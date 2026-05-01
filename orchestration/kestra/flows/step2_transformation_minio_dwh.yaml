@@ -1,5 +1,5 @@
 # Fichier : poc/kestra/flows/step2_transformation_minio_dwh.yaml
-# Ce flow lance Spark avec les paramètres métiers. À copier/coller dans Kestra.
+# Ce flow lance Spark avec les paramètres métiers. Pour cette version, il se fait sans Soda
 # 
 # Didier : Ce fichier fait partie de la Phase 3 - Step 2 (Batch DWH)
 # Didier : Cette version "Full Refresh" est adaptée pour recalculer tout l'historique (Live Uniquement)
@@ -7,7 +7,7 @@
 # Didier : Attention : vérifier le contrat de données y compris en termes de types de données
 # Didier : mise à jour de l'endroit où ce script pioche dans Minio : les raws de live
 # Didier : mots de passe en durs : dette technique
-# Didier : Attention : ajout de l'url Slack : je ne sais pas si c'est utile
+# Didier : Attention : pour la prod : ajouter un Trigger à la fin du Step 2 qui "réveille" automatiquement le Step 3 : dette technique
 # ÉVOLUTIONS MAJEURES : 
 # a) Les paramètres métiers sont gérés par Kestra (inputs). 
 # Ils sont injectés comme variables d'environnement dans le container Spark.
