@@ -1,0 +1,69 @@
+# Fichier : poc/kestra/flows/p12_tests_5_evenements.yaml
+# Ce flow permet de tester 5 événements saisis à la main dans tests_5_evenements.csv qui sont créés dans MinIO live/
+
+id: p12_tests_5_evenements
+namespace: dev
+description: "Générateur manuel de fichiers de test pour MinIO Live"
+
+inputs:
+  - id: vieillir_fichiers
+    type: BOOLEAN
+    defaults: false
+    description: "Si vrai, date les fichiers à H-3 (pour tester l'alerte Slack)"
+
+tasks:
+  - id: generate_mock_parquet
+    type: io.kestra.plugin.scripts.python.Script
+    containerImage: ghcr.io/kestra-io/pydata:latest
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - "/home/dev/projects/p12/poc:/app"
+        - "/home/dev/projects/p12/poc/storage/minio_data:/data"
+    beforeCommands:
+      - pip install pandas pyarrow > /dev/null
+    script: |
+      import pandas as pd
+      import os
+      from datetime import datetime, timedelta
+
+      # 1. Configuration
+      csv_path = "/app/generator/data/tests_5_evenements.csv"
+      output_base_dir = "/data/raw/rh/salaries/live/test_batch.parquet"
+      os.makedirs(output_base_dir, exist_ok=True)
+
+      # 2. Lecture et conversion des types
+      df = pd.read_csv(csv_path)
+      
+      # Forçage des types selon le schéma Avro
+      df['id_salarie'] = df['id_salarie'].astype('int32')
+      df['salaire_brut'] = df['salaire_brut'].astype('float32')
+      df['jours_cp'] = df['jours_cp'].fillna(0).astype('int32')
+      df['distance_m'] = df['distance_m'].fillna(0).astype('int32')
+      df['duree_s'] = df['duree_s'].fillna(0).astype('int32')
+      df['calories'] = df['calories'].fillna(0).astype('int32')
+      df['latitude'] = df['latitude'].astype('float64')
+      df['longitude'] = df['longitude'].astype('float64')
+      df['distance_km'] = df['distance_km'].astype('float64')
+
+      # 3. Ecriture format Spark (Dossier + Fichier Parquet + _SUCCESS)
+      target_file = os.path.join(output_base_dir, "part-00000-manual-test.snappy.parquet")
+      df.to_parquet(target_file, compression='snappy', index=False)
+      
+      # Création du flag de succès Spark
+      open(os.path.join(output_base_dir, "_SUCCESS"), 'a').close()
+
+      print(f"Injection réussie dans {output_base_dir}")
+
+  - id: sabotage_temporel
+    type: io.kestra.plugin.scripts.shell.Commands
+    condition: "{{ inputs.vieillir_fichiers }}"
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - "/home/dev/projects/p12/poc/storage/minio_data:/data"
+    commands:
+      - echo "Sabotage en cours : vieillissement des fichiers à H-3..."
+      - touch -d "3 hours ago" /data/raw/rh/salaries/live/test_batch.parquet
+      - touch -d "3 hours ago" /data/raw/rh/salaries/live/test_batch.parquet/part-00000-manual-test.snappy.parquet
+      - ls -l /data/raw/rh/salaries/live/test_batch.parquet

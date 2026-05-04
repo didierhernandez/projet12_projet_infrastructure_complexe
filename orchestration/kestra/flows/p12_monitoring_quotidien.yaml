@@ -1,0 +1,136 @@
+# Fichier : poc/kestra/flows/p12_monitoring_quotidien.yaml
+
+# DWH : Total fct_bien_etre + fct_primes	< 1 (Si vide = Alerte)
+# Qualité : Total soda_failed_rows	> 50% du volume total
+# Flux Live : Fichiers dans /live	Alerte si fichiers > 120 min
+# Pipeline : État du dernier Step 2	Si dernier statut != SUCCESS
+
+
+id: p12_monitoring_daily
+namespace: dev
+description: "Flow de Santé - Petit Déjeuner Data (Actif de 10h à 20h)"
+
+triggers:
+  - id: schedule
+    type: io.kestra.core.models.triggers.types.Schedule
+    # Déclenchement à la minute 0, de la 10ème à la 20ème heure, tous les jours
+    cron: "0 10-20 * * *"
+
+tasks:
+  - id: check_minio_files
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Vérification des fichiers bloqués depuis plus de 2 heures dans MinIO"
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - "/home/dev/projects/p12/poc/storage/minio_data:/data"
+    
+    commands:
+      # Cherche les parquets de + de 120 min en utilisant la variable nb_bloques, compte le nombre de lignes, et supprime les espaces
+      - |
+        COUNT=$(find /data/raw/rh/salaries/live -name "*.parquet" -mmin +120 2>/dev/null | wc -l | tr -d ' ')
+        echo "::{\"outputs\": {\"nb_bloques\": $COUNT}}::"
+
+  - id: check_debbug_minio_files
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: "Debbug d'un fichier bloqués depuis plus de 2 heures dans MinIO"
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      volumes:
+        - "/home/dev/projects/p12/poc/storage/minio_data:/data"
+    commands:
+      - echo "--- CONTENU DU DOSSIER ---"
+      - ls -R /data/raw/rh/salaries/live
+      - echo "--- TEST DU FIND SANS FILTRE ---"
+      - find /data/raw/rh/salaries/live -name "*.parquet"
+      - echo "--- COMPTAGE FINAL ---"
+      - find /data/raw/rh/salaries/live -name "*.parquet" -mmin +120 2>/dev/null | wc -l | tr -d ' '
+
+  - id: check_postgres_metrics
+    type: io.kestra.plugin.jdbc.postgresql.Query
+    description: "Récupération de la volumétrie et des rejets Soda"
+    # Assure-toi que Kestra a bien accès au hostname 'postgres'. 
+    # S'ils sont dans le même docker-compose, c'est natif.
+    url: jdbc:postgresql://postgres:5432/rh_db
+    username: didier
+    password: mon_password_secu
+    sql: |
+      SELECT 
+        (SELECT COUNT(*) FROM public.ref_salaries) AS total_salaries,
+        (SELECT COUNT(*) FROM dwh.fct_bien_etre_eligibilite) + (SELECT COUNT(*) FROM dwh.fct_primes_transport) AS total_faits,
+        (SELECT COUNT(*) FROM public.soda_failed_rows) AS total_rejets;
+    # fetchOne garantit que Kestra renvoie une seule ligne (row) avec les noms de colonnes
+    fetchOne: true
+
+  - id: send_slack_report
+    type: io.kestra.plugin.scripts.python.Script
+    description: "Analyse des règles métier et envoi du Petit Déjeuner Data sur Slack"
+    runner: PROCESS
+    beforeCommands:
+      - pip install requests > /dev/null 2>&1
+    script: |
+      import os
+      import requests
+
+      # 1. Variables
+      slack_url = os.environ.get("SLACK_WEBHOOK_URL")
+      if not slack_url:
+          print("Erreur : SLACK_WEBHOOK_URL manquante dans l'environnement système.")
+          exit(1)
+
+      # 2. Récupération des données depuis les tâches précédentes via le moteur Pebble
+      total_salaries = int("{{ outputs.check_postgres_metrics.row.total_salaries | default(0) }}")
+      total_faits = int("{{ outputs.check_postgres_metrics.row.total_faits | default(0) }}")
+      total_rejets = int("{{ outputs.check_postgres_metrics.row.total_rejets | default(0) }}")
+      # Didier : On lit la nouvelle variable explicite 'nb_bloques'
+      # Correction : on ajoute ".vars" pour accéder aux sorties personnalisées du Shell
+      fichiers_bloques = int("{{ outputs.check_minio_files.vars.nb_bloques | default('0') }}")
+      #fichiers_bloques = int("{{ outputs.check_minio_files.nb_bloques | default('0') }}")
+      print(f"Debug Kestra - Nb fichiers détectés : {fichiers_bloques}")
+
+      # 3. Règles Métier et Seuils de panique
+      ratio_rejet = 0.0
+      if (total_faits + total_rejets) > 0:
+          ratio_rejet = (total_rejets / (total_faits + total_rejets)) * 100
+
+      alerte_qualite = ratio_rejet > 50.0
+      alerte_fichiers = fichiers_bloques > 0
+
+      # 4. Formatage du message Slack
+      if alerte_qualite or alerte_fichiers:
+          statut_global = "❌ *ANOMALIE DÉTECTÉE SUR LE PIPELINE*"
+      else:
+          statut_global = "✅ *PIPELINE 100% OPÉRATIONNEL*"
+
+      msg = f"🥐 *Petit Déjeuner Data* 🥐\n\n{statut_global}\n\n"
+      
+      msg += f"📊 *Volumétrie DWH :*\n"
+      msg += f"• Salariés dans le référentiel : {total_salaries}\n"
+      msg += f"• Lignes de faits produites : {total_faits}\n\n"
+      
+      msg += f"🧪 *Qualité des Données (Soda) :*\n"
+      msg += f"• Lignes en quarantaine : {total_rejets} "
+      if alerte_qualite:
+          msg += f"*(⚠️ ALERTE : Ratio de {ratio_rejet:.1f}% > Seuil 50%)*\n\n"
+      else:
+          msg += f"*(OK : Ratio de {ratio_rejet:.1f}% - seuil < 50%)*\n\n"
+          
+      msg += f"📦 *Stockage MinIO (Flux Live) :*\n"
+      if alerte_fichiers:
+          msg += f"• ⚠️ *ALERTE :* {fichiers_bloques} fichier(s) bloqué(s) depuis +2h dans `/live` !\n"
+          msg += f"*(Vérifie le statut du flux `p12_step2_batch_dwh_full`)*"
+      else:
+          msg += f"• Flux fluide, aucun fichier bloqué en attente (>2h)."
+
+      # 5. Envoi
+      payload = {"text": msg}
+      try:
+          response = requests.post(slack_url, json=payload)
+          if response.status_code == 200:
+              print("Rapport horaire Slack envoyé avec succès !")
+          else:
+              print(f"Erreur d'envoi Slack HTTP {response.status_code}: {response.text}")
+              exit(1)
+      except Exception as e:
+          print(f"Erreur technique lors de l'envoi Slack: {e}")
+          exit(1)

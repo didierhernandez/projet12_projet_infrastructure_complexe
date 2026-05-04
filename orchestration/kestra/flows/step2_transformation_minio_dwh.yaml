@@ -1,5 +1,7 @@
 # Fichier : poc/kestra/flows/step2_transformation_minio_dwh.yaml
 # Ce flow lance Spark avec les paramètres métiers. Pour cette version, il se fait sans Soda
+#il fait au moins 3 trois tâches : il prend les fichiers MinIO de live/ :
+#tâche1 : enregistre dans Postgresql, tâche2 : envoie les messages Slack, tâche3 : archive/ dans MinIO les fichiers traités
 # 
 # Didier : Ce fichier fait partie de la Phase 3 - Step 2 (Batch DWH)
 # Didier : Cette version "Full Refresh" est adaptée pour recalculer tout l'historique (Live Uniquement)
@@ -47,7 +49,7 @@ tasks:
 
   - id: run_spark_dwh_full
     type: io.kestra.plugin.scripts.shell.Commands
-    description: "Lancement du job Spark de calcul (Batch)"
+    description: "Lancement du job Spark de calcul (Batch) pour Postgresql et l'envoie des messages Slack à partir des fichiers MinIO live/"
     containerImage: docker:cli
     taskRunner:
       type: io.kestra.plugin.scripts.runner.docker.Docker

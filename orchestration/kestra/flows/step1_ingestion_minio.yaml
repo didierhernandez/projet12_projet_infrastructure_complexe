@@ -6,7 +6,8 @@
 # Didier : Ce flow est conçu pour tourner APRÈS Step1a.
 # Il NE SUPPRIME PLUS les données de MinIO au démarrage pour conserver l'historique !
 # Mais il purge les checkpoints Spark pour garantir un nouveau stream Live propre.
-# Attention : il faut toujours avoir lancé le Step0a puis Step0 puis Step0bis au moins une fois avant.
+# Attention : il faut toujours avoir lancé le Step0a puis Step0 puis Step0bis au moins une fois avant 
+#si on veut un historique conséquent.
 # Didier : Alerte "Noms de Variables" résolue : Spark attend AWS_ACCESS_KEY_ID et AWS_SECRET_ACCESS_KEY.
 
 id: p12_step1_complet
@@ -30,7 +31,7 @@ tasks:
       - docker rm -f generator_live spark_streaming_ingestion redpanda || true
 
       - echo "Relance propre de Redpanda..."
-      # Compose va recréer le conteneur et se reconnecter automatiquement au volume existant
+      # docker-compose-streaming.yml va recréer le conteneur et se reconnecter automatiquement au volume existant
       - docker compose -f /app/docker-compose-streaming.yml up -d redpanda
       
       - echo "Environnement prêt et données conservées."
@@ -91,7 +92,7 @@ tasks:
         echo "Captation du flux pendant 180 secondes..."
         sleep 180
 
-        echo "--- LOGS DE DEBUG SPARK ---"
+        echo "--- LOGS DE DEBUG SPARK : gestion des erreurs silencieuses ---"
         docker logs spark_streaming_ingestion --tail 100 || true
 
   - id: stop_and_validate
@@ -119,8 +120,8 @@ tasks:
             COUNT_AFTER=$(find /data/raw/rh/salaries/ -name "*.parquet" 2>/dev/null | wc -l)
             DELTA=$((COUNT_AFTER - COUNT_BEFORE))
 
-            echo "Fichiers Parquet AVANT exécution (Step 0) : $COUNT_BEFORE"
-            echo "Fichiers Parquet APRES exécution (Step 0 + Live) : $COUNT_AFTER"
+            echo "Fichiers Parquet AVANT exécution (Step 1) : $COUNT_BEFORE"
+            echo "Fichiers Parquet APRES exécution (Step 1 + Live) : $COUNT_AFTER"
             echo "Nouveaux fichiers produits par le flux Live : $DELTA"
 
             if [ "$COUNT_AFTER" -gt "$COUNT_BEFORE" ]; then

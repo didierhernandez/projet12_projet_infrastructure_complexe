@@ -2,7 +2,7 @@
 # Ce flow orchestre maintenant : Nettoyage Quarantaine -> Soda -> Alerte Slack groupée après Step2
 # Ce flow 100% indépendant de Step2, pourra être lancé à la main après le Step 2
 # Didier : ce flow utilise l'image soda-agent:latest qui a été construite une fois
-# Didier : dans cette version cela n'a pas fonctionné : la variable secrète de l'url de slack est configurée 
+# Didier : dans cette version ce qui n'a pas fonctionné : la variable secrète Kestra de l'url de Slack configurée 
 #pour être utilisée dans Step3 via .env, ce qui a fonctionné c'est de passer par du python comme dans step2
 
 id: step3_quality_audit

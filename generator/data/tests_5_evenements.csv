@@ -1,0 +1,6 @@
+id_salarie,nom,prenom,date_naissance,bu,date_embauche,salaire_brut,type_contrat,jours_cp,adresse_domicile,moyen_de_deplacement,date_activite,type_sport,distance_m,duree_s,calories,commentaire,latitude,longitude,distance_km,date_geocodage,evolution_conges
+1,Durand,Michel,12/05/1985,RH,01/09/2010,2850.5,CDI,25,"12 rue des Alpes, Paris",Velo,04/05/2026,Course à pied,5200,1800,450,Test OK,48.8566,2.3522,5.2,04/05/2026,
+2,Lefebvre,Anne,22/11/1992,Data,15/03/2018,3400.0,CDI,22,"58 bd de la Marne, Lyon",Trottinette,04/05/2026,Velo,12500,2400,600,Test Qualité,45.7640,4.8357,12.5,04/05/2026,
+3,Moreau,Jean,03/02/1978,Ventes,01/01/2005,4100.25,CDI,30,"3 place de la Liberté, Lille",Voiture,04/05/2026,Marche,3100,2700,150,Test Sabotage,50.6292,3.0573,3.1,04/05/2026,
+4,Petit,Julie,15/08/1995,Marketing,12/06/2021,2700.0,CDD,10,"22 rue Haute, Bordeaux",Bus,04/05/2026,Natation,1500,3600,500,Test OK 2,44.8378,-0.5792,1.5,04/05/2026,
+5,Roux,Pierre,30/03/1988,IT,20/11/2015,3150.75,CDI,25,"8 impasse du Sud, Marseille",Velo,04/05/2026,Velo,8000,1500,350,Test Final,43.2965,5.3698,8.0,04/05/2026,
