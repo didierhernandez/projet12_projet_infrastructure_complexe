@@ -1,13 +1,13 @@
 # Fichier : poc/kestra/flows/p12_monitoring_quotidien.yaml
 
-# DWH : Total fct_bien_etre + fct_primes	< 1 (Si vide = Alerte)
-# Qualité : Total soda_failed_rows	> 50% du volume total
-# Flux Live : Fichiers dans /live	Alerte si fichiers > 120 min
-# Pipeline : État du dernier Step 2	Si dernier statut != SUCCESS
+# DWH : Total fct_bien_etre + fct_primes  < 1 (Si vide = Alerte)
+# Qualité : Total soda_failed_rows  > 50% du volume total
+# Flux Live : Fichiers dans /live Alerte si fichiers > 120 min
+# Pipeline : État du dernier Step 2 Si dernier statut != SUCCESS
 
 
 id: p12_monitoring_daily
-namespace: dev
+namespace: poc.didier
 description: "Flow de Santé - Petit Déjeuner Data (Actif de 10h à 20h)"
 
 triggers:
@@ -27,8 +27,9 @@ tasks:
     
     commands:
       # Cherche les parquets de + de 120 min en utilisant la variable nb_bloques, compte le nombre de lignes, et supprime les espaces
+      # Didier : FIX pour la robustesse (timezone/dossiers). On limite à la racine (-maxdepth 1) et on cible uniquement les dossiers (-type d)
       - |
-        COUNT=$(find /data/raw/rh/salaries/live -name "*.parquet" -mmin +120 2>/dev/null | wc -l | tr -d ' ')
+        COUNT=$(find /data/raw/rh/salaries/live -maxdepth 1 -type d -name "*.parquet" -mmin +120 2>/dev/null | wc -l | tr -d ' ')
         echo "::{\"outputs\": {\"nb_bloques\": $COUNT}}::"
 
   - id: check_debbug_minio_files
@@ -42,9 +43,9 @@ tasks:
       - echo "--- CONTENU DU DOSSIER ---"
       - ls -R /data/raw/rh/salaries/live
       - echo "--- TEST DU FIND SANS FILTRE ---"
-      - find /data/raw/rh/salaries/live -name "*.parquet"
+      - find /data/raw/rh/salaries/live -maxdepth 1 -type d -name "*.parquet"
       - echo "--- COMPTAGE FINAL ---"
-      - find /data/raw/rh/salaries/live -name "*.parquet" -mmin +120 2>/dev/null | wc -l | tr -d ' '
+      - find /data/raw/rh/salaries/live -maxdepth 1 -type d -name "*.parquet" -mmin +120 2>/dev/null | wc -l | tr -d ' '
 
   - id: check_postgres_metrics
     type: io.kestra.plugin.jdbc.postgresql.Query

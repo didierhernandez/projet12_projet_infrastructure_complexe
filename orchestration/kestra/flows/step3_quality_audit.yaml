@@ -5,8 +5,8 @@
 # Didier : dans cette version ce qui n'a pas fonctionné : la variable secrète Kestra de l'url de Slack configurée 
 #pour être utilisée dans Step3 via .env, ce qui a fonctionné c'est de passer par du python comme dans step2
 
-id: step3_quality_audit
-namespace: dev
+id: p12_step3_soda_quality_audit
+namespace: poc.didier
 description: "Audit Qualité : Scan Soda + Remplissage Quarantaine + Alerte Slack"
 
 tasks:

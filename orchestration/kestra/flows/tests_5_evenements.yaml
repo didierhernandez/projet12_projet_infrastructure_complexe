@@ -1,0 +1,52 @@
+# Fichier : poc/kestra/flows/p12_tests_5_evenements.yaml
+# Ce flow permet de tester 5 événements saisis à la main dans tests_5_evenements.csv pour qu'ils soient créés dans MinIO live/
+#il est indépendant de Step1 et fonctionne sans Debezium et avant Step2
+
+id: p12_dev_tests_5_evenements
+namespace: poc.didier
+description: "Générateur de manuel de fichiers de tests pour MinIO Live via Spark (Image Custom)"
+
+inputs:
+  - id: vieillir_fichiers
+    type: BOOLEAN
+    defaults: false
+    description: "Si vrai, date les fichiers à H-3 pour tester l'alerte de blocage"
+
+tasks:
+  - id: spark_ingest_csv
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: "poc_network"
+      volumes:
+        - "/home/dev/projects/p12/poc:/app"
+    containerImage: "poc-spark-streaming:latest"
+    env:
+      MINIO_ENDPOINT: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "admin"
+      AWS_SECRET_ACCESS_KEY: "password"
+      PYSPARK_PYTHON: python3 # Force l'usage de python3
+    commands:
+      # On utilise le chemin absolu de l'image Apache Spark
+      # On ajoute 'exit 0' pour forcer le succès si les fichiers sont créés
+      - /opt/spark/bin/spark-submit --master "local[*]" /app/spark/jobs/test_csv_ingestion.py && exit 0
+      #- spark-submit /app/spark/jobs/test_csv_ingestion.py
+
+  - id: check_sabotage
+    type: io.kestra.core.tasks.flows.If
+    condition: "{{ inputs.vieillir_fichiers }}"
+    then:
+      - id: sabotage_temporel
+        type: io.kestra.plugin.scripts.shell.Commands
+        taskRunner:
+          type: io.kestra.plugin.scripts.runner.docker.Docker
+          volumes:
+            - "/home/dev/projects/p12/poc/storage/minio_data:/data"
+        commands:
+          - |
+            echo "Sabotage en cours : vieillissement des fichiers à H-3..."
+            # On vieillit le dossier ET les fichiers à l'intérieur
+            find /data/raw/rh/salaries/live/test_batch.parquet -type f -exec touch -d "3 hours ago" {} +
+            touch -d "3 hours ago" /data/raw/rh/salaries/live/test_batch.parquet
+            echo "État final du dossier :"
+            ls -l /data/raw/rh/salaries/live/test_batch.parquet
