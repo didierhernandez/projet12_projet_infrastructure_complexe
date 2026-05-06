@@ -14,11 +14,12 @@
 # Didier : Attention : vérifier le contrat de données y compris en termes de types de données
 # Didier : Attention : pour des raisons de calculs temporaire des tables sont créées dans postgres :
 #il y a des incohérences dans les calculs : public.temp_primes ?? temp_be ?? temp_ref ??
-# Didier : à faire : utiliser les fichiers de live dans MinIO pour envoyer des messages Slack
+# Didier : utilisation des fichiers de live/ dans MinIO pour envoyer des messages Slack
 # Didier : à faire : appliquer les valeurs de géolocalisation et de logique Haversine
 # Didier : attention : Le choix du .collect() : * Côté positif : Pour un POC de quelques centaines de lignes, 
 #c'est la méthode la plus simple et la plus directe pour sortir des données de Spark et utiliser la bibliothèque requests.
-#Point d'attention : C'est une opération qui ramène tout sur le "Driver". Si ton dossier live/ contenait 1 million de lignes, ton script planterait (Out of Memory) : dette technique
+#Point d'attention : C'est une opération qui ramène tout sur le "Driver". 
+#Si ton dossier live/ contenait 1 million de lignes, ton script planterait (Out of Memory) : dette technique
 
 import os
 import math
@@ -26,7 +27,8 @@ import time
 import requests
 import psycopg2
 from datetime import datetime
-from pyspark.sql import SparkSession
+# Didier : Ajout de l'import Row pour pouvoir reconstruire un DataFrame après le Collect
+from pyspark.sql import SparkSession, Row
 #from pyspark.sql.functions import col, year, count, lit, when
 #from pyspark.sql.functions import col, year, count, lit, current_timestamp
 from pyspark.sql.functions import col, year, count, lit, current_timestamp, first
@@ -115,6 +117,11 @@ df_enriched = df_raw.withColumn("annee_civile", year(col("date_activite")))
 # Le générateur utilise les mots "Vélo/Trottinette/Autres" et "Marche/running" dans le champ moyen_de_deplacement issus du CSV
 # On inclut le salaire_brut dans l'agrégation pour ne pas le perdre lors du passage vers le DWH.
 #df_primes = df_enriched.filter(col("moyen_de_deplacement").rlike("(?i)vélo/trottinette/autres|marche/running|Course à pied|Cyclisme")) \
+# ATTENTION : Didier : à faire : evolution_conges est mal nommé.
+#evolution_conges est le nombre de jours de trajets domicile/bureau déclarés lors de la dernière 
+#déclaration d’activité sportive. Il s'ajoute à nombre_transports_total de la table des faits prime transport.
+#nombre_transports_total >= 200 dans l'année civile en cour
+#pour déclancher le droit à la prime transport et le calcul de la prime de transport.
 df_primes = df_enriched.filter(col("moyen_de_deplacement").isin("Vélo/Trottinette/Autres", "Marche/running")) \
     .groupBy("id_salarie", "annee_civile", "moyen_de_deplacement") \
     .agg(
@@ -136,6 +143,11 @@ df_bien_etre = df_enriched.filter(col("type_sport").isNotNull()) \
     .withColumn("est_eligible", col("nombre_activites_total") >= lit(PARAM_SEUIL_BIEN_ETRE)) \
     .withColumn("date_calcul_dwh", current_timestamp()) \
     .withColumn("source_donnees", lit("LIVE"))
+
+# Didier : débug : on affiche les années civiles de ce test
+#On récupère les valeurs distinctes, on les ramène sur le driver (collect)
+annees = [row[0] for row in df_enriched.select("annee_civile").distinct().collect()]
+print(f"Valeur(s) annee_civile présente(s) : {annees}")
 
 # --- CALCUL MESSAGE SLACK ---
 # Didier : Chaque ligne étant un sport dans ton générateur, on compte tout.
@@ -182,10 +194,43 @@ for row in records_slack:
 # Pour le POC, on prend la dernière position connue par salarié
 df_final_live = df_enriched.select("id_salarie", col("adresse_domicile").alias("adresse")).distinct()
 # (Logique Haversine simplifiée ici pour le batch)
-df_final_live = df_final_live.withColumn("latitude", lit(43.6)) \
-                             .withColumn("longitude", lit(3.9)) \
-                             .withColumn("distance_km", lit(10.5)) \
-                             .withColumn("evolution_conges", lit(0)) \
+# ATTENTION : Didier : à faire : evolution_conges est mal nommé.
+#evolution_conges est le nombre de jours de trajets domicile/bureau déclarés lors de la dernière 
+#déclaration d’activité sportive. Il s'ajoute à nombre_transports_total de la table des faits prime transport.
+#nombre_transports_total >= 200 dans l'année civile en cour
+#pour déclancher le droit à la prime transport et le calcul de la prime de transport.
+
+# Didier : résolu : calcul réel via API OpenStreetMap et Haversine (Option B - Collect)
+print("Début du processus de géocodage...")
+records_geo = df_final_live.collect()
+processed_geo = []
+
+for r in records_geo:
+    id_sal = r["id_salarie"]
+    adr = r["adresse"]
+    
+    # 1. Appel API pour obtenir les coordonnées
+    lat, lon = get_geocode(adr)
+    
+    # 2. Calcul de la distance à vol d'oiseau
+    dist = calculate_haversine(lat, lon, COMPANY_LAT, COMPANY_LON)
+    
+    # 3. Ajout du résultat typé pour reconstruction du dataframe
+    processed_geo.append(Row(id_salarie=id_sal, latitude=lat, longitude=lon, distance_km=dist))
+
+# Création du DataFrame avec les résultats géographiques
+if processed_geo:
+    df_geo_results = spark.createDataFrame(processed_geo)
+    # Jointure avec le dataframe distinct de base
+    df_final_live = df_final_live.join(df_geo_results, "id_salarie", "left")
+else:
+    # Sécurité au cas où records_geo serait vide
+    df_final_live = df_final_live.withColumn("latitude", lit(None).cast(DoubleType())) \
+                                 .withColumn("longitude", lit(None).cast(DoubleType())) \
+                                 .withColumn("distance_km", lit(None).cast(DoubleType()))
+
+# Finition de la dataframe comme précédemment
+df_final_live = df_final_live.withColumn("evolution_conges", lit(0)) \
                              .withColumn("date_geocodage", current_timestamp()) \
                              .withColumn("source_donnees", lit("LIVE")).drop("adresse")
 
@@ -215,11 +260,12 @@ def upsert_to_postgres(df, temp_table, target_table, constraint_cols, update_col
 
 # Exécution des Upserts
 # Didier : On aligne la liste constraint_cols avec le UNIQUE défini dans schema_dwh.sql
+# Didier : à faire : il manque des colonnes à mettre à jour
 upsert_to_postgres(df_primes, "dwh.temp_primes", "dwh.fct_primes_transport", 
-                   ["id_salarie", "annee_civile", "moyen_de_deplacement"], ["montant_prime", "date_calcul_dwh"])
+                   ["id_salarie", "annee_civile", "moyen_de_deplacement"], ["annee_civile","montant_prime", "date_calcul_dwh"])
 
 upsert_to_postgres(df_bien_etre, "dwh.temp_be", "dwh.fct_bien_etre_eligibilite", 
-                   ["id_salarie", "annee_civile"], ["nombre_activites_total", "est_eligible", "date_calcul_dwh"])
+                   ["id_salarie", "annee_civile"], ["annee_civile","nombre_activites_total", "est_eligible", "date_calcul_dwh"])
 
 upsert_to_postgres(df_final_live, "public.temp_ref", "public.ref_salaries", 
                    ["id_salarie"], ["distance_km", "latitude", "longitude", "evolution_conges", "date_geocodage"])

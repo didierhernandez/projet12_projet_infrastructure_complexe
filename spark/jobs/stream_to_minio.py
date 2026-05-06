@@ -60,7 +60,7 @@ hadoop_conf.set("fs.s3a.connection.ssl.enabled", "false")
 
 # 2. Lecture du flux Kafka
 if SPARK_MODE == "BATCH":
-    print("📥 MODE BATCH : Lecture de l'historique complet (Vrai Batch)...")
+    print("MODE BATCH : Lecture de l'historique complet (Vrai Batch)...")
     df_kafka = spark.read \
         .format("kafka") \
         .option("kafka.bootstrap.servers", REDPANDA_BROKERS) \
@@ -69,7 +69,7 @@ if SPARK_MODE == "BATCH":
         .option("endingOffsets", "latest") \
         .load()
 else:
-    print("🌊 MODE STREAM : Lecture du flux temps réel...")
+    print("MODE STREAM : Lecture du flux temps réel...")
     df_kafka = spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", REDPANDA_BROKERS) \
@@ -85,7 +85,7 @@ df_decoded = df_kafka.select(
 # 4. Écriture vers MinIO
 if SPARK_MODE == "BATCH":
     output_path = "s3a://raw/rh/salaries/historique/"
-    print(f"💾 Écriture Batch vers {output_path}...")
+    print(f"Écriture Batch vers {output_path}...")
     
     df_decoded.coalesce(1).write \
         .format("parquet") \
@@ -93,7 +93,7 @@ if SPARK_MODE == "BATCH":
         .save(output_path)
     
     count = df_decoded.count()
-    print(f"✅ FIN DU JOB BATCH. Messages transférés vers l'historique : {count}")
+    print(f"FIN DU JOB BATCH. Messages transférés vers l'historique : {count}")
 
 else:
     # Didier : Écriture en mode streaming vers le dossier live

@@ -10,11 +10,11 @@ id: p12_monitoring_daily
 namespace: poc.didier
 description: "Flow de Santé - Petit Déjeuner Data (Actif de 10h à 20h)"
 
-triggers:
-  - id: schedule
-    type: io.kestra.core.models.triggers.types.Schedule
+#triggers:
+#  - id: schedule
+#    type: io.kestra.core.models.triggers.types.Schedule
     # Déclenchement à la minute 0, de la 10ème à la 20ème heure, tous les jours
-    cron: "0 10-20 * * *"
+#    cron: "0 10-20 * * *"
 
 tasks:
   - id: check_minio_files

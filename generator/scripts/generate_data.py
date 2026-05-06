@@ -24,7 +24,7 @@
 # Didier : pour verrouiller l'étape "Identité du Schéma (Subject)", ajouté d'une configuration explicite au sérialiseur. 
 #Cela garantit que le schéma sera enregistré sous cdc.public.ref_salaries-value, 
 #assurant une compatibilité parfaite avec ce que Spark attend dans stream_to_minio.py
-# Didier : attention : get_activity( est à retravailler
+# Didier : attention : get_activity est à retravailler
 
 import pandas as pd
 import random
@@ -121,6 +121,8 @@ def run_generator(mode='HISTORY'):
     
     if mode == 'HISTORY':
         # Génrération d'un historique d'un an avant aujourd'hui
+        #Le topic Kafka/Redpanda (TOPIC_NAME) contient 365 jours d'historique, avec pour chaque jour :
+        #~10% des lignes de df_rh transformées en messages Kafka (Redpanda)
         current_date = datetime.now() - timedelta(days=365)
         while current_date <= datetime.now():
             sample = df_rh.sample(frac=0.1)

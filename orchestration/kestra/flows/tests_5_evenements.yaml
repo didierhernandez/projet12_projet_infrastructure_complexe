@@ -1,6 +1,6 @@
 # Fichier : poc/kestra/flows/p12_tests_5_evenements.yaml
 # Ce flow permet de tester 5 événements saisis à la main dans tests_5_evenements.csv pour qu'ils soient créés dans MinIO live/
-#il est indépendant de Step1 et fonctionne sans Debezium et avant Step2
+#il est indépendant de Step1a et Step1 et fonctionne sans Debezium et avant Step2
 
 id: p12_dev_tests_5_evenements
 namespace: poc.didier

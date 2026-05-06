@@ -15,10 +15,8 @@
 # Didier : dans cette version, le contrat de données est centralisé et vérifié (Circuit Breaker).
 # Didier : à éclaircir : dans ce code, une partie de la gestion des 22 (23 ????) colonnes est faite 
 #à la main dans le code pour mapper le CSV au DWH : dette technique (besoin de mapping dynamique ?)
-# Didier : dans cette version, la publication Postgres surveille toutes les tables : 
-# on accepte que Postgres ai été créée avec l'option "globale" et cela reste comme ça pour l'instant : dette technique
+# Didier : dans cette version, la publication Postgres surveille que la table ref_salaries
 
-# fichier load_ref_salaries.py - Version Optimisée (Sans redondance SQL)
 import pandas as pd
 from sqlalchemy import create_engine, text
 import os
@@ -40,18 +38,18 @@ CSV_FILE_PATH = os.environ.get("CSV_FILE_PATH", "/app/generator/data/Donnees_RH_
 engine = create_engine(f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
 
 # --- 1. EXECUTION DU DDL (La structure vient d'ici !) ---
-print("🏗️ Étape 1 : Création de la structure DWH via SQL...")
+print("Étape 1 : Création de la structure DWH via SQL...")
 try:
     with engine.begin() as conn:
         with open(SQL_FILE_PATH, 'r') as file:
             sql_script = file.read()
         conn.execute(text(sql_script))
-    print("✅ Structure SQL (Tables, PK, Unique) appliquée.")
+    print("Structure SQL (Tables, PK, Unique) appliquée.")
 except Exception as e:
     raise RuntimeError(f"Erreur SQL : {e}")
 
 # --- 2. VALIDATION DU CONTRAT (CIRCUIT BREAKER) ---
-print(f"🔍 Étape 2 : Vérification du Contrat Avro ({SCHEMA_SUBJECT})...")
+print(f"Étape 2 : Vérification du Contrat Avro ({SCHEMA_SUBJECT})...")
 # ... (Le code de validation reste identique, il est indispensable) ...
 try:
     response = requests.get(f"{SCHEMA_REGISTRY_URL}/subjects/{SCHEMA_SUBJECT}/versions/latest")
@@ -62,15 +60,15 @@ try:
             result = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'ref_salaries';"))
             pg_columns = {row[0] for row in result}
         if (avro_fields - (pg_columns - {"source_donnees", "date_calcul_dwh"})):
-            raise ValueError("🚨 DIVERGENCE DE CONTRAT détectée.")
-    print("✅ Contrat validé ou initialisation à froid prête.")
+            raise ValueError("DIVERGENCE DE CONTRAT détectée.")
+    print("Contrat validé ou initialisation à froid prête.")
 except Exception as e:
-    print(f"⚠️ Info Contrat : {e}")
+    print(f"Info Contrat : {e}")
 
 # --- 3. CONFIGURATION DYNAMIQUE CDC (Le cœur du pilotage) ---
 # Didier : On a supprimé les ALTER TABLE UNIQUE car ils sont déjà dans schema_dwh.sql
 # On ne garde ici que ce qui concerne spécifiquement l'activation du flux CDC.
-print("🔒 Étape 3 : Activation du flux logique (CDC)...")
+print("Étape 3 : Activation du flux logique (CDC)...")
 with engine.begin() as conn:
     # Crucial pour que Debezium voit tout lors des UPDATE
     conn.execute(text("ALTER TABLE public.ref_salaries REPLICA IDENTITY FULL;"))
@@ -80,10 +78,10 @@ with engine.begin() as conn:
     conn.execute(text("DROP PUBLICATION IF EXISTS dbz_publication;"))
     conn.execute(text("CREATE PUBLICATION dbz_publication FOR TABLE public.ref_salaries;"))
 
-print("✅ Flux CDC activé et restreint à ref_salaries.")
+print("Flux CDC activé et restreint à ref_salaries.")
 
 # --- 4. CHARGEMENT DES DONNÉES HISTORIQUES ---
-print("💾 Étape 4 : Chargement amnésique du référentiel CSV...")
+print("Étape 4 : Chargement amnésique du référentiel CSV...")
 try:
     df = pd.read_csv(CSV_FILE_PATH, sep=',', encoding='utf-8-sig')
     df.columns = df.columns.str.strip()
@@ -112,8 +110,8 @@ try:
         conn.execute(text("TRUNCATE TABLE public.ref_salaries CASCADE;"))
     
     df.to_sql('ref_salaries', engine, if_exists='append', index=False, schema='public')
-    print(f"🚀 Succès : {len(df)} salariés chargés.")
+    print(f"Succès : {len(df)} salariés chargés.")
 
 except Exception as e:
-    print(f"❌ Erreur chargement : {e}")
+    print(f"Erreur chargement : {e}")
     sys.exit(1)

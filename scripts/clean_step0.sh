@@ -18,7 +18,7 @@ echo "🧹 [CLEAN] Démarrage du nettoyage pré-Step 0..."
 # 1. Nettoyage des volumes de Checkpoints Spark (Hôte Linux)
 # On supprime tout pour forcer Spark à oublier les offsets Kafka
 echo "  -> Suppression des dossiers de checkpoints locaux sauf /archive..."
-sudo rm -rf ${PROJECT_ROOT}/spark/checkpoints/
+#sudo rm -rf ${PROJECT_ROOT}/spark/checkpoints/
 sudo rm -rf ${PROJECT_ROOT}/spark/checkpoints_live/
 #sudo rm -rf ${PROJECT_ROOT}/spark/checkpoints_batch_v2/
 
@@ -39,4 +39,4 @@ docker run --rm \
 echo "  -> Nettoyage des conteneurs Spark résiduels..."
 docker ps -a -q --filter "name=poc-spark" | xargs -r docker rm -f
 
-echo "✨ [CLEAN] Environnement prêt pour le Step 0."
+echo "[CLEAN] Environnement prêt pour le Step 0."

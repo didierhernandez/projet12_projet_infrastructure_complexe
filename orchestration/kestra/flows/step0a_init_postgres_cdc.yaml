@@ -13,7 +13,7 @@
 
 id: p12_step0a_init_postgres_cdc
 namespace: poc.didier
-description: "Phase 1 - Initialisation Master : Application du schéma strict et activation du CDC"
+description: "Phase 1 - Initialisation Master : Application du schéma strict à Postgres et peuplement de ref_salaries et CONFIGURATION DYNAMIQUE CDC"
 
 tasks:
   - id: load_strict_reference_data

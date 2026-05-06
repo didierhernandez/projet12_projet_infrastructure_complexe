@@ -1,5 +1,5 @@
 # test_csv_ingestion.py
-# Script dédié pour l'injection des 5 événements de test dans MinIO
+# Script dédié pour l'injection des 5 événements de test typr mocks dans MinIO
 # Réutilise la logique de connexion S3A de stream_to_minio.py
 
 # Didier : Ajout d'un timestamp pour éviter les collisions dans l'archive
@@ -7,6 +7,8 @@
 
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, FloatType
+# Didier : Ajout des fonctions pour le formatage de la date activite
+from pyspark.sql.functions import col, to_date, date_format
 import os
 from datetime import datetime
 
@@ -69,6 +71,10 @@ schema = StructType([
 print(f"Lecture du CSV : {csv_path}")
 df = spark.read.csv(csv_path, header=True, schema=schema, sep=",")
 
+# Didier : Transformation de date_activite pour correspondre au format attendu par le Step 2 
+# (Passage de JJ/MM/AAAA à AAAA-MM-JJ 08:00:00)
+df = df.withColumn("date_activite", date_format(to_date(col("date_activite"), "dd/MM/yyyy"), "yyyy-MM-dd 08:00:00"))
+
 print(f"Écriture de {df.count()} événements vers {output_path}...")
 
 # On force coalesce(1) pour n'avoir qu'un seul fichier parquet facile à 'toucher' pour le sabotage
@@ -77,7 +83,7 @@ df.coalesce(1).write \
     .mode("overwrite") \
     .save(output_path)
 
-print(f"✅ Injection de test réussie dans {output_path}. Prêt pour le Step 2.")
+print(f"Injection de test réussie dans {output_path}. Prêt pour le Step 2.")
 
 # Didier : ferme proprement les connexions S3A
 spark.stop()

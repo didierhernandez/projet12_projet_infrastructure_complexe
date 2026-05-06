@@ -74,8 +74,9 @@ CREATE TABLE dwh.fct_primes_transport (
     salaire_brut_base DOUBLE PRECISION,
     montant_prime DOUBLE PRECISION,
     statut_paiement VARCHAR DEFAULT 'A PAYER', -- Ajout d'une valeur par défaut pour éviter l'erreur NOT NULL
-    date_calcul_dwh TIMESTAMP NOT NULL,    
-    source_donnees VARCHAR NOT NULL,       
+    date_calcul_dwh TIMESTAMP NOT NULL,
+    source_donnees VARCHAR NOT NULL,
+    nombre_transports_total INTEGER,
     -- COHÉRENCE : Puisqu'un salarié peut utiliser plusieurs modes (ex: Vélo ET Marche),
     -- il nous faut inclure le moyen dans la clé pour éviter que l'un n'écrase l'autre lors de l'Upsert.
     UNIQUE (id_salarie, annee_civile, moyen_de_deplacement)

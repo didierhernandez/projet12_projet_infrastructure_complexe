@@ -1,7 +1,9 @@
 # Fichier situé dans : poc/spark/jobs/historique_to_dwh.py
-# Didier : ATTENTION : c'est pas clair. Ce code doit peut-être évoluer s'il doit être utilisé
-# Didier : ATTENTION : c'est pas clair. il manque peut-être le codage de la forfaitisation à 1 jour du nombre de jours de congés acquis 
-#pour cet historique POC pour le champ evolution_conges
+# Didier : ATTENTION : c'est pas clair. Ce code doit évoluer s'il doit être utilisé
+# Didier : ATTENTION : c'est pas clair. il manque, autre autre, le bon calcul de la prime de transport 
+#en fonction d'un nombre minimal de trajet domicile/bureau (200) dans l'année civile
+#pour cet historique POC avec peut-être l'utilisation du champ evolution_conges 
+#et nécessairement du futur champ nombre_transports_total de la table fct_primes_transport
 
 # Ce job lit UNIQUEMENT l'historique (MinIO), applique les valeurs par défaut initiaux géographique de 5 km, 
 #date_geocodage à 1970-01-01 et evolution_conges à 1 et source_donnees" à "INITIAL_LOAD_BIS" 
