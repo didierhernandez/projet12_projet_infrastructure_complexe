@@ -192,13 +192,9 @@ for row in records_slack:
 
 # --- 4. Simulation Geocodage (uniquement pour les nouveaux ou modifiés) ---
 # Pour le POC, on prend la dernière position connue par salarié
-df_final_live = df_enriched.select("id_salarie", col("adresse_domicile").alias("adresse")).distinct()
+# Didier : c'est ici que l'on décide de ce que l'on va envoyer dans ref_salairies qui ne fait pas l'objet de calculs
+df_final_live = df_enriched.select("id_salarie", col("adresse_domicile").alias("adresse"),"evolution_conges", "date_activite").distinct()
 # (Logique Haversine simplifiée ici pour le batch)
-# ATTENTION : Didier : à faire : evolution_conges est mal nommé.
-#evolution_conges est le nombre de jours de trajets domicile/bureau déclarés lors de la dernière 
-#déclaration d’activité sportive. Il s'ajoute à nombre_transports_total de la table des faits prime transport.
-#nombre_transports_total >= 200 dans l'année civile en cour
-#pour déclancher le droit à la prime transport et le calcul de la prime de transport.
 
 # Didier : résolu : calcul réel via API OpenStreetMap et Haversine (Option B - Collect)
 print("Début du processus de géocodage...")
@@ -225,14 +221,20 @@ if processed_geo:
     df_final_live = df_final_live.join(df_geo_results, "id_salarie", "left")
 else:
     # Sécurité au cas où records_geo serait vide
+    # Didier : à faire : gestion des dysfonctionnement du géocodage
     df_final_live = df_final_live.withColumn("latitude", lit(None).cast(DoubleType())) \
                                  .withColumn("longitude", lit(None).cast(DoubleType())) \
                                  .withColumn("distance_km", lit(None).cast(DoubleType()))
 
 # Finition de la dataframe comme précédemment
-df_final_live = df_final_live.withColumn("evolution_conges", lit(0)) \
-                             .withColumn("date_geocodage", current_timestamp()) \
-                             .withColumn("source_donnees", lit("LIVE")).drop("adresse")
+# Didier : à faire évoluer
+# ATTENTION : Didier : à faire : evolution_conges est mal nommé.
+#evolution_conges est le nombre de jours de trajets domicile/bureau déclarés lors de la dernière 
+#déclaration d’activité sportive. Il s'ajoute à nombre_transports_total de la table des faits prime transport.
+#nombre_transports_total >= 200 dans l'année civile en cour
+#pour déclancher le droit à la prime transport et le calcul de la prime de transport.col("date_activite")
+df_final_live = df_final_live.withColumn("date_geocodage", current_timestamp()) \
+                             .withColumn("source_donnees", lit("LIVE3")).drop("adresse")
 
 # --- 5. CHARGEMENT DWH (IDEMPOTENCE VIA UPSERT) ---
 def upsert_to_postgres(df, temp_table, target_table, constraint_cols, update_cols):
@@ -268,7 +270,7 @@ upsert_to_postgres(df_bien_etre, "dwh.temp_be", "dwh.fct_bien_etre_eligibilite",
                    ["id_salarie", "annee_civile"], ["annee_civile","nombre_activites_total", "est_eligible", "date_calcul_dwh"])
 
 upsert_to_postgres(df_final_live, "public.temp_ref", "public.ref_salaries", 
-                   ["id_salarie"], ["distance_km", "latitude", "longitude", "evolution_conges", "date_geocodage"])
+                   ["id_salarie"], ["distance_km", "latitude", "longitude", "date_geocodage", "evolution_conges", "date_activite", "source_donnees"])
 
 # --- 6. ARCHIVAGE DES FICHIERS ---
 print("Archivage des fichiers traités...")

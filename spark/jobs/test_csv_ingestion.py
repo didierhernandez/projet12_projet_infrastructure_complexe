@@ -43,6 +43,7 @@ output_path = f"s3a://raw/rh/salaries/live/test_batch_{timestamp}.parquet"
 
 # Définition du Schéma (Hardcoded pour éviter de dépendre du Registry pour les tests)
 # On respecte l'ordre et les types attendus par le Step 2
+# Didier : à faire : identifier et corriger les erreurs de types
 schema = StructType([
     StructField("id_salarie", IntegerType(), True),
     StructField("nom", StringType(), True),
@@ -65,7 +66,7 @@ schema = StructType([
     StructField("longitude", DoubleType(), True),
     StructField("distance_km", DoubleType(), True),
     StructField("date_geocodage", StringType(), True),
-    StructField("evolution_conges", StringType(), True)
+    StructField("evolution_conges", IntegerType(), True)
 ])
 
 print(f"Lecture du CSV : {csv_path}")
