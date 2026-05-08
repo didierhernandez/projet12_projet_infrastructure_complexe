@@ -35,6 +35,8 @@ services:
       SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
       KESTRA_CONFIGURATION: |
         kestra:
+          tutorialFlows:
+            enabled: false
           variables:
             # DIDIER : C'est ici que l'on déverrouille l'accès
             env-vars:

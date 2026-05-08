@@ -23,10 +23,14 @@ namespace: poc.didier
 description: "Recalcul complet de l'historique DWH Postgres pour Metabase (Live Uniquement)"
 
 inputs:
+  - id: param_seuil_prime
+    type: STRING
+    defaults: "200"
+    description: "Nombre trajets domicile/bureau de la prime prime transport (ex: 200)"
   - id: param_taux_prime
     type: STRING
     defaults: "0.05"
-    description: "Pourcentage de la prime sportive (ex: 0.05 pour 5%)"
+    description: "Pourcentage de la prime transport (ex: 0.05 pour 5%)"
   - id: param_seuil_activites
     type: STRING
     defaults: "15"
@@ -66,6 +70,7 @@ tasks:
         -v /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs \
         -v /home/dev/projects/p12/poc/spark/libs:/opt/spark/libs \
         --env-file /opt/.env \
+        -e PARAM_SEUIL_PRIME="{{ inputs.param_seuil_prime }}" \
         -e PARAM_TAUX_PRIME="{{ inputs.param_taux_prime }}" \
         -e PARAM_SEUIL_BIEN_ETRE="{{ inputs.param_seuil_activites }}" \
         -e MINIO_ENDPOINT="http://minio:9000" \

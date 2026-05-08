@@ -29,9 +29,8 @@ import psycopg2
 from datetime import datetime
 # Didier : Ajout de l'import Row pour pouvoir reconstruire un DataFrame après le Collect
 from pyspark.sql import SparkSession, Row
-#from pyspark.sql.functions import col, year, count, lit, when
-#from pyspark.sql.functions import col, year, count, lit, current_timestamp
-from pyspark.sql.functions import col, year, count, lit, current_timestamp, first
+# Didier : Ajout de coalesce et sum pour le calcul du cumul historique et batch
+from pyspark.sql.functions import col, year, count, lit, current_timestamp, first, coalesce, sum, when
 from pyspark.sql.types import DoubleType, StringType, IntegerType
 
 # --- CONFIGURATION GÉOGRAPHIQUE (PHASE 1) ---
@@ -40,6 +39,7 @@ COMPANY_LON = 3.8965
 
 # --- RÉCUPÉRATION DES PARAMÈTRES (VIA KESTRA / ENV) ---
 PARAM_TAUX_PRIME = float(os.environ.get("PARAM_TAUX_PRIME", "0.05"))
+PARAM_SEUIL_PRIME = int(os.environ.get("PARAM_SEUIL_PRIME", "200"))
 PARAM_SEUIL_BIEN_ETRE = int(os.environ.get("PARAM_SEUIL_BIEN_ETRE", "15"))
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://minio:9000")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
@@ -114,35 +114,82 @@ df_enriched = df_raw.withColumn("annee_civile", year(col("date_activite")))
 
 # --- CALCUL DES PRIMES TRANSPORT ---
 # Didier : On accorde la prime uniquement si le salarié utilise un mode de transport "durable"
-# Le générateur utilise les mots "Vélo/Trottinette/Autres" et "Marche/running" dans le champ moyen_de_deplacement issus du CSV
-# On inclut le salaire_brut dans l'agrégation pour ne pas le perdre lors du passage vers le DWH.
-#df_primes = df_enriched.filter(col("moyen_de_deplacement").rlike("(?i)vélo/trottinette/autres|marche/running|Course à pied|Cyclisme")) \
-# ATTENTION : Didier : à faire : evolution_conges est mal nommé.
-#evolution_conges est le nombre de jours de trajets domicile/bureau déclarés lors de la dernière 
-#déclaration d’activité sportive. Il s'ajoute à nombre_transports_total de la table des faits prime transport.
-#nombre_transports_total >= 200 dans l'année civile en cour
-#pour déclancher le droit à la prime transport et le calcul de la prime de transport.
-df_primes = df_enriched.filter(col("moyen_de_deplacement").isin("Vélo/Trottinette/Autres", "Marche/running")) \
+# On tente de récupérer l'historique depuis Postgres via JDBC pour cumuler les trajets
+try:
+    df_history_prime = spark.read.format("jdbc") \
+        .option("url", JDBC_URL) \
+        .option("dbtable", "dwh.fct_primes_transport") \
+        .option("user", DB_USER) \
+        .option("password", DB_PASSWORD) \
+        .option("driver", "org.postgresql.Driver") \
+        .load() \
+        .select("id_salarie", "annee_civile", col("nombre_transports_total").alias("hist_nb_transports"))
+except Exception as e:
+    print(f"INFO : Impossible de lire l'historique Prime (table peut-être vide) : {e}")
+    df_history_prime = None
+
+# On fait la somme des nouveaux trajets du batch actuel (colonne evolution_conges)
+df_new_prime = df_enriched.filter(col("moyen_de_deplacement").isin("Vélo/Trottinette/Autres", "Marche/running")) \
     .groupBy("id_salarie", "annee_civile", "moyen_de_deplacement") \
     .agg(
-        count("*").alias("nb_deplacements"),
-        # Didier : on récupère le salaire brut pour le DWH
-        first("salaire_brut").alias("salaire_brut_base") 
-    ) \
-    .withColumn("montant_prime", col("salaire_brut_base") * lit(PARAM_TAUX_PRIME)) \
+        sum("evolution_conges").alias("nb_trajets_batch"),
+        first("salaire_brut").alias("salaire_brut_base")
+    )
+
+if df_history_prime:
+    # Didier : Jointure avec l'historique pour obtenir le nouveau total
+    df_primes = df_new_prime.join(df_history_prime, ["id_salarie", "annee_civile"], "left") \
+        .withColumn("nombre_transports_total", coalesce(col("hist_nb_transports"), lit(0)) + col("nb_trajets_batch"))
+else:
+    df_primes = df_new_prime.withColumn("nombre_transports_total", col("nb_trajets_batch"))
+
+# Didier : Application de la logique de seuil pour le montant de la prime
+# Didier FIX : On supprime les colonnes de calcul technique (hist_nb_transports) pour éviter l'erreur UndefinedColumn dans Postgres
+df_primes = df_primes.withColumn("montant_prime", 
+                                 when(col("nombre_transports_total") >= lit(PARAM_SEUIL_PRIME), 
+                                      col("salaire_brut_base") * lit(PARAM_TAUX_PRIME))
+                                 .otherwise(lit(0.0))) \
     .withColumn("date_calcul_dwh", current_timestamp()) \
-    .withColumn("source_donnees", lit("LIVE")).drop("nb_deplacements")
+    .withColumn("source_donnees", lit("LELIVE6")) \
+    .drop("nb_trajets_batch", "salaire_brut_base", "hist_nb_transports")
 
 # --- CALCUL BIEN-ÊTRE (ÉLIGIBILITÉ) ---
 # Didier : Chaque ligne étant un sport dans ton générateur, on compte tout.
-# On vérifie simplement que type_sport n'est pas nul par sécurité.
-df_bien_etre = df_enriched.filter(col("type_sport").isNotNull()) \
+#On vérifie simplement que type_sport n'est pas nul par sécurité.
+# Didier : il faut d'abord récupérer la valeur de nombre_activites_total qui est dans fct_bien_etre_eligibilite, puis ajouter nombre_activites
+#On tente de récupérer l'historique depuis Postgres via JDBC
+try:
+    df_history_be = spark.read.format("jdbc") \
+        .option("url", JDBC_URL) \
+        .option("dbtable", "dwh.fct_bien_etre_eligibilite") \
+        .option("user", DB_USER) \
+        .option("password", DB_PASSWORD) \
+        .option("driver", "org.postgresql.Driver") \
+        .load() \
+        .select("id_salarie", "annee_civile", col("nombre_activites_total").alias("hist_nb_total"))
+except Exception as e:
+    print(f"INFO : Impossible de lire l'historique Bien-être (table peut-être vide) : {e}")
+    df_history_be = None
+
+# On compte les nouvelles activités du batch actuel
+df_new_be = df_enriched.filter(col("type_sport").isNotNull()) \
     .groupBy("id_salarie", "annee_civile") \
-    .agg(count("*").alias("nombre_activites_total")) \
-    .withColumn("seuil_applique", lit(PARAM_SEUIL_BIEN_ETRE)) \
+    .agg(count("*").alias("nombre_activites_batch"))
+
+if df_history_be:
+    # Didier : Jointure avec l'historique sur id et année civile pour sommer les résultats
+    df_bien_etre = df_new_be.join(df_history_be, ["id_salarie", "annee_civile"], "left") \
+        .withColumn("nombre_activites_total", coalesce(col("hist_nb_total"), lit(0)) + col("nombre_activites_batch"))
+else:
+    # Didier : Premier passage, le cumul est simplement égal au nombre du batch
+    df_bien_etre = df_new_be.withColumn("nombre_activites_total", col("nombre_activites_batch"))
+
+# Finalisation avec l'application du seuil de prime bien-être
+df_bien_etre = df_bien_etre.withColumn("seuil_applique", lit(PARAM_SEUIL_BIEN_ETRE)) \
     .withColumn("est_eligible", col("nombre_activites_total") >= lit(PARAM_SEUIL_BIEN_ETRE)) \
     .withColumn("date_calcul_dwh", current_timestamp()) \
-    .withColumn("source_donnees", lit("LIVE"))
+    .withColumn("source_donnees", lit("LELIVE6")) \
+    .select("id_salarie", "annee_civile", "nombre_activites_total", "seuil_applique", "est_eligible", "date_calcul_dwh", "source_donnees")
 
 # Didier : débug : on affiche les années civiles de ce test
 #On récupère les valeurs distinctes, on les ramène sur le driver (collect)
@@ -193,12 +240,20 @@ for row in records_slack:
 # --- 4. Simulation Geocodage (uniquement pour les nouveaux ou modifiés) ---
 # Pour le POC, on prend la dernière position connue par salarié
 # Didier : c'est ici que l'on décide de ce que l'on va envoyer dans ref_salairies qui ne fait pas l'objet de calculs
-df_final_live = df_enriched.select("id_salarie", col("adresse_domicile").alias("adresse"),"evolution_conges", "date_activite").distinct()
-# (Logique Haversine simplifiée ici pour le batch)
+# Didier : On regroupe par id_salarie pour sommer evolution_conges sur le batch actuel pour ref_salaries
+df_final_live = df_enriched.groupBy("id_salarie") \
+    .agg(
+        first("adresse_domicile").alias("adresse"),
+        sum("evolution_conges").alias("evolution_conges"), # Somme du batch selon ta réponse
+        first("date_activite").alias("date_activite"),
+        first("type_sport").alias("type_sport"),
+        first("distance_m").alias("distance_m"),
+        first("duree_s").alias("duree_s")
+    )
 
 # Didier : résolu : calcul réel via API OpenStreetMap et Haversine (Option B - Collect)
 print("Début du processus de géocodage...")
-records_geo = df_final_live.collect()
+records_geo = df_final_live.select("id_salarie", "adresse").collect()
 processed_geo = []
 
 for r in records_geo:
@@ -217,24 +272,17 @@ for r in records_geo:
 # Création du DataFrame avec les résultats géographiques
 if processed_geo:
     df_geo_results = spark.createDataFrame(processed_geo)
-    # Jointure avec le dataframe distinct de base
+    # Jointure avec le dataframe regroupé
     df_final_live = df_final_live.join(df_geo_results, "id_salarie", "left")
 else:
     # Sécurité au cas où records_geo serait vide
-    # Didier : à faire : gestion des dysfonctionnement du géocodage
     df_final_live = df_final_live.withColumn("latitude", lit(None).cast(DoubleType())) \
                                  .withColumn("longitude", lit(None).cast(DoubleType())) \
                                  .withColumn("distance_km", lit(None).cast(DoubleType()))
 
 # Finition de la dataframe comme précédemment
-# Didier : à faire évoluer
-# ATTENTION : Didier : à faire : evolution_conges est mal nommé.
-#evolution_conges est le nombre de jours de trajets domicile/bureau déclarés lors de la dernière 
-#déclaration d’activité sportive. Il s'ajoute à nombre_transports_total de la table des faits prime transport.
-#nombre_transports_total >= 200 dans l'année civile en cour
-#pour déclancher le droit à la prime transport et le calcul de la prime de transport.col("date_activite")
 df_final_live = df_final_live.withColumn("date_geocodage", current_timestamp()) \
-                             .withColumn("source_donnees", lit("LIVE3")).drop("adresse")
+                             .withColumn("source_donnees", lit("LELIVE6")).drop("adresse")
 
 # --- 5. CHARGEMENT DWH (IDEMPOTENCE VIA UPSERT) ---
 def upsert_to_postgres(df, temp_table, target_table, constraint_cols, update_cols):
@@ -262,29 +310,31 @@ def upsert_to_postgres(df, temp_table, target_table, constraint_cols, update_col
 
 # Exécution des Upserts
 # Didier : On aligne la liste constraint_cols avec le UNIQUE défini dans schema_dwh.sql
-# Didier : à faire : il manque des colonnes à mettre à jour
+# Didier : On met bien à jour nombre_transports_total pour fct_primes_transport
 upsert_to_postgres(df_primes, "dwh.temp_primes", "dwh.fct_primes_transport", 
-                   ["id_salarie", "annee_civile", "moyen_de_deplacement"], ["annee_civile","montant_prime", "date_calcul_dwh"])
+                   ["id_salarie", "annee_civile", "moyen_de_deplacement"], 
+                   ["annee_civile", "nombre_transports_total", "montant_prime", "date_calcul_dwh", "source_donnees"])
 
 upsert_to_postgres(df_bien_etre, "dwh.temp_be", "dwh.fct_bien_etre_eligibilite", 
-                   ["id_salarie", "annee_civile"], ["annee_civile","nombre_activites_total", "est_eligible", "date_calcul_dwh"])
+                   ["id_salarie", "annee_civile"], 
+                   ["annee_civile", "nombre_activites_total", "seuil_applique", "est_eligible", "date_calcul_dwh", "source_donnees"])
 
 upsert_to_postgres(df_final_live, "public.temp_ref", "public.ref_salaries", 
-                   ["id_salarie"], ["distance_km", "latitude", "longitude", "date_geocodage", "evolution_conges", "date_activite", "source_donnees"])
+                   ["id_salarie"], 
+                   ["distance_km", "latitude", "longitude", "date_geocodage", "evolution_conges", "date_activite", "type_sport", "distance_m", "duree_s", "source_donnees"])
 
 # --- 6. ARCHIVAGE DES FICHIERS ---
 print("Archivage des fichiers traités...")
 sc = spark.sparkContext
 Path = sc._gateway.jvm.org.apache.hadoop.fs.Path
 FileSystem = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem
-# Ajout pour gérer l'URI Java
 URI = sc._gateway.jvm.java.net.URI 
 conf = sc._jsc.hadoopConfiguration()
 
 source_dir = "s3a://raw/rh/salaries/live/"
 archive_dir = "s3a://raw/rh/salaries/archive/"
 
-# FIX: On force Hadoop à utiliser le système de fichiers S3A au lieu du Local (file:///)
+# FIX: On force Hadoop à utiliser le système de fichiers S3A
 fs = FileSystem.get(URI(source_dir), conf)
 
 files = fs.listStatus(Path(source_dir))
@@ -292,7 +342,6 @@ for f in files:
     file_path = f.getPath()
     if file_path.getName().endswith(".parquet"):
         dst = Path(archive_dir + file_path.getName())
-        # On vérifie si la destination existe pour éviter les erreurs de renommage
         if fs.exists(dst):
             fs.delete(dst, False)
         fs.rename(file_path, dst)
