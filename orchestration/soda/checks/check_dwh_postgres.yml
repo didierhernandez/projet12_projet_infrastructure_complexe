@@ -1,4 +1,16 @@
+# Fichier : poc/soda/schecks/chek_dwh_postgres.yml
 # Didier : Audit Qualité DWH
+# Didier : dans cette version :
+#1. Logique de l'année en cours : Soda doit utiliser une variable passée par Kestra (comme ${ANNEE_EN_COURS})
+#2. Comme le moyen_de_deplacement est dans la table fct_primes_transport et que la distance_km est dans ref_salaries, Soda devra faire une jointure SQL pour valider la règle.
+#définir un "check" utilisant une requête SQL personnalisée (Custom SQL check)
+#3. Gestion des anomalies : Si un trajet "Vélo" dépasse 25 km : On lève une simple alerte dans Soda
+#4. La clé de jointure et l'unicité : C'est uniquement sur la colonne id_salarie que nous devons lier la table des faits (dwh.fct_primes_transport) et le référentiel (public.ref_salaries)
+#5. La cohérence temporelle : l'audit ne doit-il porter que sur l'année en cours
+#6. Les critères de validations par exemple 15 et 25 sont écrites en dur alors qu'elles devraient être dans 
+#des variables d'environnments.  Voir fichier aussi poc/kestra/flows/step3_quality_audit.yaml : dette technique
+
+
 # On garde ref_salaries dans public car elle y est
 checks for public.ref_salaries:
   - min(distance_km) >= 0:
@@ -18,3 +30,22 @@ checks for dwh.fct_primes_transport:
       name: Prime positive
   - max(montant_prime) <= 500:
       name: Seuil alerte prime
+
+  # Didier : Règles métier croisées (Jointure avec ref_salaries)
+  # Didier : à faire : attention à la gestion de la casse des conditions : dette technique
+  # On vérifie la cohérence entre le mode de transport et la distance réelle calculée
+  # Seuil : Marche/Running > 15km ou Vélo/Trottinette > 25km déclenche une alerte
+  - failed rows:
+      name: Anomalie distance par rapport au mode de transport
+      fail condition: |
+        id_salarie IN (
+            SELECT f.id_salarie
+            FROM dwh.fct_primes_transport f
+            JOIN public.ref_salaries r ON f.id_salarie = r.id_salarie
+            WHERE f.annee_civile = ${ANNEE_EN_COURS}
+              AND (
+                (f.moyen_de_deplacement = 'Marche/running' AND r.distance_km > 1)
+                OR
+                (f.moyen_de_deplacement = 'Vélo/Trottinette/Autres' AND r.distance_km > 25)
+              )
+        )
