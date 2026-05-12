@@ -1,9 +1,10 @@
 # fichier load_ref_salaries.py dans poc/scripts
+# Ce script peuple la table ref_salaries au tout début des Step0X
 # Didier : ATTENTION : c'est pas clair. Ce code doit nécessairement évoluer s'il doit être utilisé
 # Didier : ATTENTION : c'est pas clair. Il y a 23 colonnes et non 22 colonnes pour la table ref_salaries
 
 # Le Script de chargement (Amnésique) : Ce script vide la table des salariés et la recharge proprement.
-# Didier : ce fichier fait partie de la Phase 3 - Step 0_bis (Initial Load)
+# Didier : ce fichier fait partie de la Phase 3 - Step 0a (Initial Load)
 # Didier : pour l'instant les mots de passes sont en clairs et non centralisés : dette technique
 # Didier : NOUVEAU - Alignement du sujet sur la convention Debezium (cdc.public.ref_salaries-value)
 # Didier : ajout de la colonne evolution_conges pour anticiper les besoins futurs.

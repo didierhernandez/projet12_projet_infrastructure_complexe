@@ -1,11 +1,12 @@
 # fichier stream_to_minio.py dans poc/spark/jobs/
 # Il fait partie de la phase A : Préparation des Images "Custom" (Dockerisation)
-# de l'étape2 : Génération et Ingestion sans Soda pour l'instant
+# de l'étape2 : Génération et Ingestion sans Soda ni Debezium pour l'instant
+# Il est utilisé par Step0 (création de l'historique) et Step1 (le live)
 # ce code Spark de l'étape 2 prend les fichiers du broker panda et les enregistrent sur minio
 # Didier : résolu : on tourne en rond : mis à jour suite à la bascule de json vers avro 
 # et de la version de bitnami vers l'image chez Apache: ok avec l'image Apache : choix stabilisé
 # Didier : Ce script détecte désormais la variable SPARK_MODE. 
-# Si elle est à BATCH, Spark traitera tous les messages présents dans Kafka puis s'arrêtera de lui-même proprement.
+# Si elle est à BATCH, Spark traitera tous les messages présents dans Redpanda (Kafka) puis s'arrêtera de lui-même proprement.
 # Didier : dans cette version les éléments en BATCH de l'historique step0 sont dans s3a://raw/rh/salaries/historique/
 # et ceux de step1 dans s3a://raw/rh/salaries/live/
 # Didier : dans cette version : récupération dynamique du contrat de données dans Redpanda
@@ -14,6 +15,7 @@
 # Didier : pour ce poc il a été fait le choix d'un chmod -R 777 /home/dev/projects/p12/poc/spark/checkpoints_live
 #en production il faudra stocker les checkpoints de streaming directement sur le stockage objet (MinIO/S3), 
 #au même titre que les données : dette technique
+# Didier : pour limiter le nombre d'évènements par fichier parquet on utilise maxOffsetsPerTrigger pour le live
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, expr
@@ -69,12 +71,15 @@ if SPARK_MODE == "BATCH":
         .option("endingOffsets", "latest") \
         .load()
 else:
-    print("MODE STREAM : Lecture du flux temps réel...")
+    # Didier : je bascule startingOffsets" de  "earliest" à "latest" pour que spark ne lise pas
+    #les messages redpanda présents avant que Step1 ne soit lancé
+    print("MODE STREAM : live : lecture du flux temps réel...")
     df_kafka = spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", REDPANDA_BROKERS) \
         .option("subscribe", "cdc.public.ref_salaries") \
-        .option("startingOffsets", "earliest") \
+        .option("startingOffsets", "latest") \
+        .option("maxOffsetsPerTrigger", 5) \
         .load()
 
 # 3. Décodage Avro

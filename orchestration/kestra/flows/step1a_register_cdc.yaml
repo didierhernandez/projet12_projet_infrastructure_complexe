@@ -25,12 +25,12 @@ tasks:
         STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://debezium:8083/connectors/postgres-connector)
         
         if [ "$STATUS" -eq 200 ]; then
-          echo "✅ Le connecteur postgres-connector existe déjà. On passe à la suite."
+          echo "Le connecteur postgres-connector existe déjà. On passe à la suite."
         else
-          echo "🚀 Création du connecteur Debezium..."
+          echo "Création du connecteur Debezium..."
           curl -i -X POST http://debezium:8083/connectors \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             -d @/app/cdc/register_postgres.json
-          echo -e "\n✅ Connecteur enregistré avec succès."
+          echo -e "\nConnecteur enregistré avec succès."
         fi

@@ -8,7 +8,7 @@
 # Mais il purge les checkpoints Spark pour garantir un nouveau stream Live propre.
 # Attention : il faut toujours avoir lancé le Step0a puis Step0 puis Step0bis au moins une fois avant 
 #si on veut un historique conséquent.
-# Didier : Alerte "Noms de Variables" résolue : Spark attend AWS_ACCESS_KEY_ID et AWS_SECRET_ACCESS_KEY.
+# Didier : "Noms de Variables" résolue : Spark attend AWS_ACCESS_KEY_ID et AWS_SECRET_ACCESS_KEY.
 
 id: p12_step1_complet
 namespace: poc.didier
@@ -26,13 +26,14 @@ tasks:
         - /home/dev/projects/p12/poc:/app
     commands:
       - echo "Nettoyage forcé des conteneurs..."
-      # Didier : On ajoute 'redpanda' ici. 
-      # On supprime le CONTENEUR, mais pas le VOLUME. Les données sont sauvées.
-      - docker rm -f generator_live spark_streaming_ingestion redpanda || true
+      # Didier : On n'ajoute plus 'redpanda' ici : on le laisse tourner 
+      #On supprime les CONTENEURS générateur live et spark, mais pas le VOLUME. Les données sont sauvées.
+      - docker rm -f generator_live spark_streaming_ingestion || true
+      #- docker rm -f generator_live spark_streaming_ingestion redpanda || true
 
-      - echo "Relance propre de Redpanda..."
+      #- echo "Relance propre de Redpanda..."
       # docker-compose-streaming.yml va recréer le conteneur et se reconnecter automatiquement au volume existant
-      - docker compose -f /app/docker-compose-streaming.yml up -d redpanda
+      #- docker compose -f /app/docker-compose-streaming.yml up -d redpanda
       
       - echo "Environnement prêt et données conservées."
 

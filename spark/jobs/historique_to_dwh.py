@@ -50,7 +50,7 @@ print("Lecture de l'historique depuis MinIO...")
 try:
     df_history = spark.read.parquet("s3a://raw/rh/salaries/historique/")
 except Exception as e:
-    print(f"❌ Erreur lors de la lecture de l'historique : {e}")
+    print(f"Erreur lors de la lecture de l'historique : {e}")
     spark.stop()
     exit(1)
 
@@ -159,11 +159,11 @@ try:
     conn.commit()
     cur.close()
     conn.close()
-    print("✅ Upsert terminé et table de staging supprimée.")
+    print("Upsert terminé et table de staging supprimée.")
 except Exception as e:
-    print(f"❌ Erreur lors de l'Upsert Postgres : {e}")
+    print(f"Erreur lors de l'Upsert Postgres : {e}")
     # Didier : On lève l'exception pour que le job Spark s'arrête en erreur 
     # et que Kestra affiche la tâche en rouge (Casser l'illusion).
     raise e
 
-print("✅ Job d'initialisation DWH terminé avec succès.")
+print("Job d'initialisation DWH terminé avec succès.")

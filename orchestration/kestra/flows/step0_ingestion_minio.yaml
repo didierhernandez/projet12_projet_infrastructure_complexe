@@ -13,11 +13,11 @@
 #et les fichiers sont nettoyés indépendamment à chaque lancement de ce flow
 #donc, dans une version plus proche de la production, il faudra utiliser des outils de type Delta Lake et Apache Iceberg
 # Didier : à vérifier : Ajout d'une étape de build pour le générateur et spark suite à la mise en cohérence des noms des images utilisées, 
-# et mise à jour du docker run pour utiliser le nom d'image verrouillée
+#et mise à jour du docker run pour utiliser le nom d'image verrouillée
 # Ce flow automatise désormais la création de l'image Docker pour éviter les versions obsolètes.
 # Didier - Attention : dans cette version il y a un chemin en dur de mon pc : il faudra le changer pour le readme :
 #-v /home/dev/projects/p12/poc/spark/jobs:/opt/spark/jobs \
-# Didier : à vérifier : ce flow utilise poc-generator pour l'historique.
+# Didier : vérifier cohérence : ce flow utilise poc-generator pour l'historique.
 # Didier : dans cette version les fichier jar de spark sont tous utilisés en local car prétéléchargés
 # Didier : à vérifier que ce n'est plus vrai : dans cette version, le topic est créé en dehors du Kestra à la main à chaque reset du test : 
 #docker exec -it redpanda rpk topic create cdc.public.ref_salaries

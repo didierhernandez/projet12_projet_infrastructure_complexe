@@ -32,7 +32,7 @@ checks for dwh.fct_primes_transport:
       name: Seuil alerte prime
 
   # Didier : Règles métier croisées (Jointure avec ref_salaries)
-  # Didier : à faire : attention à la gestion de la casse des conditions : dette technique
+  # Didier : gestion de la casse des conditions : dette technique annulée
   # On vérifie la cohérence entre le mode de transport et la distance réelle calculée
   # Seuil : Marche/Running > 15km ou Vélo/Trottinette > 25km déclenche une alerte
   - failed rows:
@@ -44,8 +44,8 @@ checks for dwh.fct_primes_transport:
             JOIN public.ref_salaries r ON f.id_salarie = r.id_salarie
             WHERE f.annee_civile = ${ANNEE_EN_COURS}
               AND (
-                (f.moyen_de_deplacement = 'Marche/running' AND r.distance_km > 1)
+                (LOWER(f.moyen_de_deplacement) LIKE 'marche%' AND r.distance_km > 15)
                 OR
-                (f.moyen_de_deplacement = 'Vélo/Trottinette/Autres' AND r.distance_km > 25)
+                (LOWER(f.moyen_de_deplacement) LIKE 'vél%' AND r.distance_km > 25)
               )
         )
