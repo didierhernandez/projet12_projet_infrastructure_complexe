@@ -7,7 +7,7 @@
 
 ## Présentation
 
-Ce POC (Proof of Concept) est un système complet de suivi des activités physiques des salariés, couplé à un mécanisme de **primes d'encouragement**. Le projet traite les flux en temps réel via une **architecture Medallion** (Bronze/Silver/Gold).
+Ce POC (Proof of Concept) est un système d'incitations et de suivis des activités physiques des salariés, couplé à un mécanisme de **primes d'encouragement**. Le projet traite les flux en temps réel via une **architecture Medallion** (Bronze/Silver/Gold).
 
 L'écosystème repose sur une stack moderne :
 
@@ -56,8 +56,8 @@ Plaintext
 ├── docker-compose-generator.yml    # (Hors stack) Simulateur "Strava-like"
 ├── .env                            # Variables d'environnement globales
 ├── sql/
-│   ├── schema_dwh.sql              # Schéma cible (Data Warehouse)
-│   └── init_rh_db_clean.sql        # Script d'initialisation de la base RH
+│   ├── schema_dwh.sql              # Schéma cible de la base de données
+│   └── init_rh_db_clean.sql        # Script d'initialisation de la base  de données
 ├── spark/
 │   └── jobs/
 │       ├── stream_to_minio.py      # Job Streaming : Kafka -> MinIO (Raw)

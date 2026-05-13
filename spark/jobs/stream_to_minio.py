@@ -78,7 +78,7 @@ else:
         .format("kafka") \
         .option("kafka.bootstrap.servers", REDPANDA_BROKERS) \
         .option("subscribe", "cdc.public.ref_salaries") \
-        .option("startingOffsets", "latest") \
+        .option("startingOffsets", "earliest") \
         .option("maxOffsetsPerTrigger", 5) \
         .load()
 

@@ -1,7 +1,8 @@
 # Fichier situé dans : poc/spark/jobs/batch_dwh_postgres.py
 # Ce job lit le flux LIVE (MinIO), complète le référentiel (Géocodage), 
 # calcule les primes/éligibilité, et alimente le DWH de manière idempotente.
-# 
+# Didier : ATTENTION : cela ne va pas car cela entrainer la création d'évènements de façon circulaire et mal formé via Debzuim et Redpanda
+
 # Didier : Phase 3 - Step 2 (Batch DWH incremental)
 # Didier : PLUS BESOIN de modifier les taux ici ! 
 #          Les variables PARAM_ sont pilotées par Kestra et récupérées via os.environ.
@@ -128,7 +129,7 @@ except Exception as e:
     print(f"INFO : Impossible de lire l'historique Prime (table peut-être vide) : {e}")
     df_history_prime = None
 
-# On fait la somme des nouveaux trajets du batch actuel (colonne evolution_conges)
+# On fait la somme des nouveaux trajets domicile/bureau du batch actuel (colonne evolution_conges)
 df_new_prime = df_enriched.filter(col("moyen_de_deplacement").isin("Vélo/Trottinette/Autres", "Marche/running")) \
     .groupBy("id_salarie", "annee_civile", "moyen_de_deplacement") \
     .agg(
@@ -240,11 +241,11 @@ for row in records_slack:
 # --- 4. Simulation Geocodage (uniquement pour les nouveaux ou modifiés) ---
 # Pour le POC, on prend la dernière position connue par salarié
 # Didier : c'est ici que l'on décide de ce que l'on va envoyer dans ref_salairies qui ne fait pas l'objet de calculs
-# Didier : On regroupe par id_salarie pour sommer evolution_conges sur le batch actuel pour ref_salaries
+# Didier : Approfondir : On regroupe par id_salarie pour sommer evolution_conges sur le batch actuel pour ref_salaries
 df_final_live = df_enriched.groupBy("id_salarie") \
     .agg(
         first("adresse_domicile").alias("adresse"),
-        sum("evolution_conges").alias("evolution_conges"), # Somme du batch selon ta réponse
+        sum("evolution_conges").alias("evolution_conges"), # Somme du batch
         first("date_activite").alias("date_activite"),
         first("type_sport").alias("type_sport"),
         first("distance_m").alias("distance_m"),
@@ -319,9 +320,10 @@ upsert_to_postgres(df_bien_etre, "dwh.temp_be", "dwh.fct_bien_etre_eligibilite",
                    ["id_salarie", "annee_civile"], 
                    ["annee_civile", "nombre_activites_total", "seuil_applique", "est_eligible", "date_calcul_dwh", "source_donnees"])
 
-upsert_to_postgres(df_final_live, "public.temp_ref", "public.ref_salaries", 
-                   ["id_salarie"], 
-                   ["distance_km", "latitude", "longitude", "date_geocodage", "evolution_conges", "date_activite", "type_sport", "distance_m", "duree_s", "source_donnees"])
+# Didier : ATTENTION : cela ne va pas car cela entrainer la création d'évènements de façon circulaire et mal formé via Debzuim et Redpanda
+#upsert_to_postgres(df_final_live, "public.temp_ref", "public.ref_salaries", 
+#                   ["id_salarie"], 
+#                   ["distance_km", "latitude", "longitude", "date_geocodage", "evolution_conges", "date_activite", "type_sport", "distance_m", "duree_s", "source_donnees"])
 
 # --- 6. ARCHIVAGE DES FICHIERS ---
 print("Archivage des fichiers traités...")
