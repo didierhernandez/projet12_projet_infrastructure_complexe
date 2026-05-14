@@ -9,6 +9,8 @@
 # Attention : il faut toujours avoir lancé le Step0a puis Step0 puis Step0bis au moins une fois avant 
 #si on veut un historique conséquent.
 # Didier : "Noms de Variables" résolue : Spark attend AWS_ACCESS_KEY_ID et AWS_SECRET_ACCESS_KEY.
+# Didier : ATTENTION : dans cette version, je ne suis pas sûr qu'il soit cohérent de lancer le générateur live 
+#car il y a déjà l'ensemble des événnement dans la table ref_salaries à traiter dans Redpanda après Step1a
 
 id: p12_step1_complet
 namespace: poc.didier

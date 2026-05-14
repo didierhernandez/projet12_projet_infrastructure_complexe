@@ -21,6 +21,7 @@
 #c'est la méthode la plus simple et la plus directe pour sortir des données de Spark et utiliser la bibliothèque requests.
 #Point d'attention : C'est une opération qui ramène tout sur le "Driver". 
 #Si ton dossier live/ contenait 1 million de lignes, ton script planterait (Out of Memory) : dette technique
+# Didier : dans cette version, lorsque la valeur de evolution_conges est null, on donne par défaut la valeur 5
 
 import os
 import math
@@ -108,6 +109,10 @@ except Exception as e:
     print(f"INFO : Aucune donnée à traiter dans /live/. Erreur : {e}")
     spark.stop()
     exit(0)
+
+# Didier : dans cette version on met evolution_conges à la valeur 5 si on a initialement Null dans MinIO
+df_enriched = df_raw.fillna(5, subset=["evolution_conges"]) \
+                    .withColumn("annee_civile", year(col("date_activite")))
 
 # --- 2. TRANSFORMATION & CALCULS ---
 # Didier : Utilisation de 'date_activite' (confirmé par generate_data.py)
