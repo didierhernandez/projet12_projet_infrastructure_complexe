@@ -1,5 +1,5 @@
 {
-  "name": "postgres-connector",
+  "name": "postgres-connector-v9",
   "config": {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     "database.hostname": "postgres",
